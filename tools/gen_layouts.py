@@ -51,13 +51,17 @@ def build_dumper() -> Path | None:
 
     tmp = Path(tempfile.mkdtemp())
     src = tmp / "dump-layout.cpp"
-    src.write_text(DUMP)
+    src.write_text(DUMP, newline="\n")
     exe = tmp / ("dump-layout.exe" if sys.platform == "win32" else "dump-layout")
+    # Provisioning.cpp reaches into SlotLifecycle for the OTA staging region, so the
+    # dumper has to link it too. Listing dependencies by hand is exactly the kind of
+    # thing that rots, so this list mirrors what the gate compiles.
+    deps = ["Provisioning", "SlotTable", "SlotLifecycle"]
     proc = subprocess.run(
         [
-            cxx, "-std=c++17", f"-I{ROOT / 'firmware' / 'include'}",
-            str(src), str(ROOT / "firmware" / "src" / "Provisioning.cpp"),
-            str(ROOT / "firmware" / "src" / "SlotTable.cpp"), "-o", str(exe),
+            cxx, "-std=c++17", f"-I{ROOT / 'firmware' / 'include'}", str(src),
+            *[str(ROOT / "firmware" / "src" / f"{d}.cpp") for d in deps],
+            "-o", str(exe),
         ],
         capture_output=True,
         text=True,
@@ -108,6 +112,9 @@ def main() -> int:
 
     PART_DIR.mkdir(parents=True, exist_ok=True)
 
+    # newline="\n" on every write. Without it Python translates to CRLF on Windows,
+    # and regenerating then always shows a diff even when the content is identical --
+    # which trains you to ignore the very check that catches a real drift.
     (PART_DIR / "quadboot.csv").write_text(
         HEADER_NOTE.format(
             title=f"{max_slots} slots, two of them in use.",
@@ -129,7 +136,8 @@ def main() -> int:
         )
         + "\n"
         + full_csv.rstrip()
-        + "\n"
+        + "\n",
+        newline="\n",
     )
 
     (PART_DIR / "dualboot.csv").write_text(
@@ -148,7 +156,8 @@ def main() -> int:
         )
         + "\n"
         + dual_csv.rstrip()
-        + "\n"
+        + "\n",
+        newline="\n",
     )
 
     print(f"wrote {PART_DIR / 'quadboot.csv'} ({max_slots} slots)")

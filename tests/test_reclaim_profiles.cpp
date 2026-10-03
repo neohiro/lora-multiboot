@@ -25,7 +25,6 @@ namespace {
 
 constexpr std::uint32_t k16Mb = 16u * 1024u * 1024u;
 constexpr std::uint32_t kImage = 0x180000;
-constexpr const char* kHw = "Heltec LoRa 32 V4";
 
 SlotTable board(std::uint8_t slots) { return SlotTable::parse(renderSlots(slots), k16Mb); }
 
