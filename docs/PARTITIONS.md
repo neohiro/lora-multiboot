@@ -37,6 +37,24 @@ Everything below the slots is fixed forever and never relocated:
 | `nvs` | `0x16000` | 40 KB |
 | `coredump` | `0x20000` | 64 KB |
 
+And every slot, so each row exists in the shipped table by arithmetic rather than
+by being typed in:
+
+| Slot | App label | App offset | App size | Filesystem label | FS offset | FS size |
+|---|---|---|---|---|---|---|
+| 0 | `ota_0` | `0x30000` | 2 MB | `fs_meshcore` | `0x230000` | 1 MB |
+| 1 | `ota_1` | `0x330000` | 2 MB | `fs_meshtastic` | `0x530000` | 1 MB |
+| 2 | `ota_2` | `0x630000` | 2 MB | `fs_reticulum` | `0x830000` | 1 MB |
+| 3 | `ota_3` | `0x930000` | 2 MB | `fs_lorawan` | `0xB30000` | 1 MB |
+| 4 | `ota_4` | `0xC30000` | 2 MB | `fs_custom` | `0xE30000` | 1 MB |
+
+Five slots fit in 16 MB with about 850 KB to spare. An 8 MB board gets two, from
+the same code.
+
+CI regenerates the tables and fails on any difference, and separately fails if a
+partition exists in a CSV but is not named in this document — a layout nobody
+documented is a layout nobody reviews.
+
 The coredump sits *below* the slots rather than above them specifically so that
 capacity is a single subtraction and adding a slot never disturbs it.
 
