@@ -1,0 +1,35 @@
+# Normalise line endings in the repository, not just in this working tree.
+#
+# Without this, git's default core.autocrlf on Windows rewrites every LF file to
+# CRLF on checkout. That directly contradicts .editorconfig and, more
+# importantly, it makes tests/test_repo_hygiene.py fail on a fresh Windows clone
+# while passing on the machine that committed -- the worst possible way to
+# discover a line-ending problem.
+#
+# eol=lf pins LF in the working tree on every platform, and text=auto lets git
+# detect what is text, so the vendored sources are handled correctly too.
+
+* text=auto eol=lf
+
+# Binary artefacts: never translated, even if a line ending sneaks in.
+*.bin binary
+*.elf binary
+*.map binary
+*.a binary
+*.o binary
+*.exe binary
+*.d binary
+*.su binary
+*.png binary
+*.zip binary
+
+# Generated, and deliberately not normalised line endings.
+Makefile text eol=lf
+*.ld text eol=lf
+*.ps1 text eol=lf
+*.py text eol=lf
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.toml text eol=lf
+*.md text eol=lf

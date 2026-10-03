@@ -1,0 +1,20 @@
+# Host gate output (make check)
+build/
+*.exe
+*.o
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+firmware/.pio/
+
+# Flashed artefacts
+firmware/*.bin
+firmware/*.elf
+firmware/*.map
+
+# Python
+__pycache__/
+*.pyc
+.venv/

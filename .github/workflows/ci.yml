@@ -1,0 +1,112 @@
+name: CI
+
+# The gate is the same one a contributor runs locally: `python tools/gate.py`
+# compiles the portable firmware logic with the same strict flags, runs its suites
+# against the shipped partition tables, and runs the flashing tool's own tests.
+# Keeping it identical matters -- a second, CI-only definition of "passing" is a
+# definition that drifts.
+#
+# Driven by Python rather than make on purpose. A C++ compiler is unavoidable;
+# `make` is not, and GitHub's Windows and macOS images do not guarantee it. A
+# Makefile-only gate fails on the runner for reasons that have nothing to do with
+# the code.
+#
+# There is deliberately no PlatformIO build here yet. The firmware's radio layer
+# is not written, so a green firmware build would be a build of a stub. The gate
+# covers the code that exists.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push makes an in-flight run for the same ref irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          python3 --version
+          (g++ --version || clang++ --version)
+
+      # -Werror is part of the gate's flags, so a warning that would once have
+      # been a note fails the build instead of quietly accumulating.
+      - name: python tools/gate.py
+        run: python3 tools/gate.py
+
+  layouts:
+    name: Shipped layouts match the code
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # The partition tables are generated from Provisioning.hpp. If the shipped
+      # CSV and the geometry in the header ever disagree, the validator and the
+      # flasher are checking a fiction -- and the fiction is what gets written to
+      # somebody's board. Regenerating must therefore be a no-op.
+      - name: Regenerating layouts must change nothing
+        run: |
+          python3 tools/gen_layouts.py
+          if ! git diff --quiet -- firmware/partitions; then
+            echo "::error::firmware/partitions is out of date with Provisioning.hpp"
+            git --no-pager diff -- firmware/partitions
+            exit 1
+          fi
+          echo "layouts match the code"
+
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # .gitattributes pins LF in the working tree on every platform. Without
+      # this check a Windows clone silently rewrites line endings and the local
+      # gate can disagree with CI about what the files say.
+      - name: No CRLF in tracked text files
+        run: |
+          if git grep -Il $'\r' -- . > /tmp/crlf.txt 2>/dev/null && [ -s /tmp/crlf.txt ]; then
+            echo "::error::CRLF line endings found in:"
+            cat /tmp/crlf.txt
+            exit 1
+          fi
+          echo "line endings clean"
+
+      - name: Every partition is documented
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          doc = pathlib.Path("docs/PARTITIONS.md").read_text()
+          missing = []
+          for csv in sorted(pathlib.Path("firmware/partitions").glob("*.csv")):
+              for line in csv.read_text().splitlines():
+                  line = line.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  label = line.split(",")[0].strip()
+                  if label not in doc:
+                      missing.append(f"{csv.name}: {label}")
+          if missing:
+              sys.exit("undocumented partitions:\n  " + "\n  ".join(missing))
+          print("every partition is documented")
+          PY
