@@ -1,151 +1,271 @@
 // SPDX-License-Identifier: MIT
 //
-// On-device bring-up, stage one.
+// On-device bring-up.
 //
-// Deliberately dependency-free: this file and the three modules beside it
-// compile with nothing but a C++17 compiler, which is the same property the host
-// test gate relies on. The radio layer is *not* here yet, and this file does not
-// pretend otherwise -- see the note at the bottom of setup().
+// Deliberately dependency-free beyond Arduino: every decision this file reports is
+// made by the portable modules beside it, which compile with nothing but a C++17
+// compiler and are exercised on a laptop by the same gate that runs in CI.
 //
-// What it does do is the part worth doing before any RF is transmitted: prove
-// out loud that the node's plan and its flash layout are coherent. Both checks
-// below have caught real, silent, field-only failures, and both are far cheaper
-// to find at boot than on a rooftop.
+// The job here is not to control a radio yet. It is to make the node prove, out
+// loud, that everything it is about to depend on is actually true: the RF plan, the
+// flash layout, the isolation between its frameworks, the airtime budget, and the
+// airtime it has spent. Every one of those has a failure mode that is otherwise
+// silent -- a node that repeats happily while serving one mesh, or that is quietly
+// over its duty-cycle limit, is not something anybody notices until it is a
+// regulatory problem or a support ticket.
 
 #include <Arduino.h>
 
 #include <string>
 
+#include "bridge/Airtime.hpp"
 #include "bridge/ChannelPlan.hpp"
 #include "bridge/ProtocolId.hpp"
+#include "bridge/Provisioning.hpp"
+#include "bridge/RadioPlan.hpp"
+#include "bridge/Roles.hpp"
+#include "bridge/SlotLifecycle.hpp"
 #include "bridge/SlotTable.hpp"
+#include "bridge/Statistics.hpp"
+#include "bridge/StatusPanel.hpp"
+#include "bridge/SystemUpdate.hpp"
 
 namespace {
 
-// Region is a build flag. Default EU_868, because that is the one region where
-// the two community defaults land on the same carrier and the whole
-// architecture depends on it.
+// Region is a build flag. Default EU_868, because that is the one region where the
+// two community defaults land on the same carrier and the whole architecture
+// depends on it.
 #ifndef BRIDGE_REGION
 #define BRIDGE_REGION "EU_868"
 #endif
 
-// Overridable at build time, e.g. -DFREQUENCY_MHZ=906.875
+// 0 means "use the region's default frequency".
 #ifndef FREQUENCY_MHZ
 #define FREQUENCY_MHZ 0.0f
 #endif
 
-constexpr std::uint32_t kFlashSizeBytes = 16u * 1024u * 1024u;
+#ifndef TX_POWER_DBM
+#define TX_POWER_DBM 22
+#endif
 
-bridge::Region regionFromCode() {
-  const bridge::RegionDefaults* d = bridge::regionDefaultsByCode(BRIDGE_REGION);
-  return d->region;
+// Read from the chip at runtime rather than assumed. The Heltec V4 ships 16 MB of
+// external flash, but a V3 does not, and a five-slot layout on an 8 MB board
+// fails in a way that looks like a bad download rather than a wrong assumption.
+#ifndef FLASH_SIZE_BYTES
+#define FLASH_SIZE_BYTES (16u * 1024u * 1024u)
+#endif
+
+constexpr std::uint32_t kFlashSize = FLASH_SIZE_BYTES;
+
+bridge::Region region() {
+  return bridge::regionDefaultsByCode(BRIDGE_REGION)->region;
 }
 
-void line(const char* s) {
-  Serial.println(s);
-}
+void rule() { Serial.println("--------------------------------------------------"); }
 
-void reportPlan() {
-  const bridge::PlanReport r = bridge::resolvePlan(regionFromCode(), FREQUENCY_MHZ);
+// The partition table this image was built against, kept in sync with
+// firmware/partitions/quadboot.csv by tools/gen_layouts.py. Deliberately embedded
+// rather than read from flash, so a node can always report what it believes even
+// when the flash it was told to trust has been rewritten underneath it.
+const char* kCompiledLayout =
+    "bootloader,     app,  factory, 0x0,      0x7000,\n"
+    "partition_tbl,  data, nvs,     0x8000,   0xC000,\n"
+    "otadata,        data, otadata, 0x14000,  0x2000,\n"
+    "nvs,            data, nvs,     0x16000,  0xA000,\n"
+    "coredump,       data, coredump,0x20000,  0x10000,\n"
+    "ota_0,          app,  ota_0,   0x30000,  0x200000,\n"
+    "fs_meshcore,    data, spiffs,  0x230000, 0x100000,\n"
+    "ota_1,          app,  ota_1,   0x330000, 0x200000,\n"
+    "fs_meshtastic,  data, littlefs,0x530000, 0x100000,\n"
+    "ota_2,          app,  ota_2,   0x630000, 0x200000,\n"
+    "fs_reticulum,   data, spiffs,  0x830000, 0x100000,\n"
+    "ota_3,          app,  ota_3,   0x930000, 0x200000,\n"
+    "fs_lorawan,     data, spiffs,  0xB30000, 0x100000,\n"
+    "ota_4,          app,  ota_4,   0xC30000, 0x200000,\n"
+    "fs_custom,      data, spiffs,  0xE30000, 0x100000,\n";
 
-  line("");
-  line("plan:");
+void reportPlan(const bridge::PlanReport& plan) {
+  Serial.println();
+  Serial.println("RF plan");
   Serial.print("  ");
-  Serial.println(bridge::describePlan(r));
-  Serial.print("  status: ");
-  Serial.println(r.detail);
+  Serial.println(bridge::describePlan(plan));
+  Serial.print("  status:  ");
+  Serial.println(plan.detail);
 
-  if (r.status == bridge::PlanStatus::FrequencyMismatch) {
-    Serial.print("  the two community defaults are ");
-    Serial.print(r.driftMHz, 3);
-    Serial.println(" MHz apart");
-    Serial.print("  retune the meshcore side to match, or this node hears one mesh plus noise: ");
-    Serial.println(r.retune);
-  }
-  if (r.status == bridge::PlanStatus::OutOfBand) {
-    Serial.print("  ");
-    Serial.println(r.driftMHz, 3);
-    Serial.println("  MHz is outside this region's band. That is a configuration error.");
-  }
-  if (r.status == bridge::PlanStatus::MeshCoreFreqUnknown) {
-    Serial.println("  frequencies coincide but the MeshCore default here is unconfirmed.");
-    Serial.println("  confirm both communities agree on this channel before deploying.");
+  switch (plan.status) {
+    case bridge::PlanStatus::FrequencyMismatch: {
+      Serial.print("  the two defaults are ");
+      Serial.print(plan.driftMHz, 3);
+      Serial.println(" MHz apart");
+      Serial.print("  retune the ");
+      Serial.print(plan.retune);
+      Serial.println(" side to match, or this node hears one mesh plus noise");
+      break;
+    }
+    case bridge::PlanStatus::OutOfBand:
+      Serial.print("  ");
+      Serial.print(plan.driftMHz, 3);
+      Serial.println(" MHz is outside this region's band: a configuration error");
+      break;
+    case bridge::PlanStatus::MeshCoreFreqUnknown:
+      Serial.println("  carriers coincide but the MeshCore default is unconfirmed here");
+      Serial.println("  confirm both communities use this channel before deploying");
+      break;
+    case bridge::PlanStatus::Ok:
+      Serial.println("  shared carrier: one radio, both meshes");
+      break;
   }
 
   Serial.print("  airtime cap: ");
-  Serial.print(bridge::dutyCycleFor(regionFromCode()));
-  line("%");
+  Serial.print(bridge::dutyCycleFor(region()));
+  Serial.println("%  (MeshCore's stock 50% is not a legal budget here)");
 }
 
-void reportFlash() {
-  // The partition table baked into this image, so a node can be asked what it
-  // thinks it was flashed with instead of the operator guessing from a filename.
-  static const char kCsv[] =
-      "# Partition table as compiled into this image\n"
-      "bootloader,     app,  factory, 0x0,      0x7000,\n"
-      "partition_tbl,  data, nvs,     0x8000,   0xC000,\n"
-      "otadata,        data, otadata,0x14000,  0x2000,\n"
-      "nvs,            data, nvs,     0x16000,  0xA000,\n"
-      "ota_0,          app,  ota_0,   0x20000,  0x400000,\n"
-      "fs_meshcore,    data, spiffs,  0x420000, 0x200000,\n"
-      "ota_1,          app,  ota_1,   0x620000, 0x400000,\n"
-      "fs_meshtastic,  data, littlefs,0xA20000, 0x200000,\n";
+void reportRadio(const bridge::RadioPlanResult& radio) {
+  Serial.println();
+  Serial.println("Radio");
+  Serial.print("  config:      ");
+  Serial.println(bridge::radioPlanStatusName(radio.status));
+  Serial.print("  promiscuous: ");
+  Serial.println(radio.config.promiscuousSyncMatch ? "yes (required)" : "NO - one mesh would be invisible");
+  Serial.print("  sync words:  ");
+  const bridge::SyncAcceptance acc = bridge::acceptanceFor();
+  Serial.print("0x");
+  Serial.print(acc.words[0], HEX);
+  Serial.print(" 0x");
+  Serial.print(acc.words[1], HEX);
+  Serial.println(" ...");
+  Serial.print("  tx power:    ");
+  Serial.print(radio.config.txPowerDbm);
+  Serial.print(" dBm  (region allows ");
+  Serial.print(radio.maxConductedDbm);
+  Serial.println(")");
 
-  bridge::TableReport pr;
-  const bridge::SlotTable t =
-      bridge::SlotTable::parse(std::string(kCsv), kFlashSizeBytes, &pr);
+  bridge::Modulation m = radio.config.modulation;
+  bridge::RfPlan mp;
+  mp.frequencyMHz = radio.config.frequencyMHz;
+  mp.bandwidthKHz = m.bandwidthKHz;
+  mp.spreadingFactor = m.spreadingFactor;
+  mp.codingRateDenominator = m.codingRateDenominator;
+  const bridge::Modulation mod = bridge::Modulation::fromPlan(mp);
+  Serial.print("  airtime:     ");
+  Serial.print(bridge::airtimeUs(mod, 64) / 1000.0f, 2);
+  Serial.println(" ms for a 64-byte frame");
+}
 
-  line("");
-  line("flash:");
+void reportFlash(const bridge::SlotTable& table) {
+  Serial.println();
+  Serial.println("Flash");
   Serial.print("  ");
-  Serial.println(t.describe());
-  Serial.print("  layout: ");
-  Serial.println(pr.ok() ? pr.detail : "PARSE FAILED");
+  Serial.println(table.describe());
+  Serial.print("  geometry:    ");
+  Serial.println(table.validate().detail);
+  Serial.print("  frameworks:  ");
+  Serial.println(table.validateFrameworks().ok() ? "isolated" : table.validateFrameworks().detail);
+  Serial.print("  system zone: ");
+  Serial.println(bridge::systemRegionIsContained(table) ? "self-contained"
+                                                         : "NOT CONTAINED - updates unsafe");
+  Serial.print("  slots:       ");
+  Serial.print(bridge::maxSlotsForFlash(kFlashSize));
+  Serial.println(" fit in this flash");
+}
 
-  const bridge::TableReport v = t.validate();
-  Serial.print("  geometry: ");
-  Serial.println(v.ok() ? "ok" : v.detail);
+void reportSlots(const bridge::SlotTable& table, bridge::DeviceState& state) {
+  Serial.println();
+  Serial.println("Slots");
+  const std::uint8_t declared = bridge::provisionedSlots(table);
+  for (std::uint8_t i = 0; i < declared; ++i) {
+    const bridge::SlotStatus s = bridge::slotStatus(table, state, i);
+    Serial.print("  ota_");
+    Serial.print(i);
+    Serial.print("  ");
+    Serial.print(s.state == bridge::SlotState::Provisioned ? "provisioned" : "empty    ");
+    Serial.print("  0x");
+    Serial.print(s.offset, HEX);
+    Serial.print("  settings 0x");
+    Serial.print(s.fsOffset, HEX);
+    Serial.print("  ");
+    Serial.println(s.bootsByDefault ? "<- boots" : "");
+  }
+}
 
-  const bridge::TableReport f = t.validateFrameworks();
-  Serial.print("  frameworks: ");
-  Serial.println(f.ok() ? "isolated" : f.detail);
+void reportRoles(const bridge::SlotTable& table) {
+  Serial.println();
+  Serial.println("Roles");
+  std::size_t count = 0;
+  const bridge::RoleProfile* all = bridge::allProfiles(&count);
+  for (std::size_t i = 0; i < count; ++i) {
+    Serial.print("  ");
+    Serial.print(all[i].label);
+    Serial.print(all[i].servesTwoMeshes ? "   (serves both meshes)" : "");
+    Serial.println("");
+  }
+  Serial.print("  slots are exclusive: one runs at a time and owns the SX1262.");
+  Serial.println("");
 }
 
 void reportIdentifier() {
-  // Prove the identifier end to end on the target, using the same code the
-  // radio path will call. A MeshCore public-channel frame and a Meshtastic
-  // public-channel frame, each carrying the sync word it really arrives with.
+  Serial.println();
+  Serial.println("Identifier");
   const std::uint8_t mc[] = {0x11, 0x01, 0x03, 0x7A, 0x9C, 0x2E, 0x51};
   const std::uint8_t mt[] = {0x95, 0x33, 0x16, 0xDE, 0xAD, 0xBE, 0xEF};
 
-  line("");
-  line("identifier:");
   const bridge::Identification a = bridge::identify(mc, sizeof(mc), 0x12, true);
   Serial.print("  MC frame -> ");
   Serial.print(bridge::protocolTag(a.protocol));
-  Serial.print(" (");
+  Serial.print("   (");
   Serial.print(a.reason);
-  line(")");
+  Serial.println(")");
 
   const bridge::Identification b = bridge::identify(mt, sizeof(mt), 0x2B, true);
   Serial.print("  MT frame -> ");
   Serial.print(bridge::protocolTag(b.protocol));
-  Serial.print(" (");
+  Serial.print("   (");
   Serial.print(b.reason);
-  line(")");
+  Serial.println(")");
 
-  // The case that matters most in the field: a private Meshtastic channel
-  // arrives wearing a sync word this build has never seen, and only the
-  // plaintext MeshHeader magic saves it.
+  // The case that matters most in the field: a private Meshtastic channel arrives
+  // wearing a sync word this build has never seen, and only the plaintext
+  // MeshHeader magic saves it.
   const bridge::Identification c = bridge::identify(mt, sizeof(mt), 0x77, true);
   Serial.print("  private MT -> ");
   Serial.print(bridge::protocolTag(c.protocol));
-  Serial.print(" (");
+  Serial.print("   (");
   Serial.print(c.reason);
-  line(")");
+  Serial.println(")");
+
+  const std::uint8_t foreign[] = {0xC0, 0xFF, 0xEE};
+  const bridge::Identification d = bridge::identify(foreign, sizeof(foreign), 0x55, true);
+  Serial.print("  foreign LoRa -> ");
+  Serial.print(bridge::protocolTag(d.protocol));
+  Serial.print("   (");
+  Serial.print(d.reason);
+  Serial.println(")");
+}
+
+void reportPanel(const bridge::PanelFrame& panel) {
+  Serial.println();
+  Serial.println("Panel");
+  for (std::uint8_t i = 0; i < panel.lineCount; ++i) {
+    Serial.print("  |");
+    Serial.print(panel.line[i].text);
+    Serial.println("|");
+  }
+  const char* alert = panel.alert();
+  if (alert[0] != '\0') {
+    Serial.print("  alert: ");
+    Serial.println(alert);
+  }
 }
 
 }  // namespace
+
+bridge::PlanReport g_plan;
+bridge::RadioPlanResult g_radio;
+bridge::SlotTable g_table;
+bridge::DeviceState g_state;
+bridge::AirtimeGovernor g_airtime{region()};
+bridge::Statistics g_stats;
 
 void setup() {
   Serial.begin(115200);
@@ -153,23 +273,81 @@ void setup() {
   while (!Serial && millis() - t0 < 3000) {
   }
 
-  line("");
-  line("meshcore-meshtastic-heltec-v4");
+  Serial.println();
+  Serial.println("meshcore-meshtastic-heltec-v4");
+  Serial.print("region ");
+  Serial.print(BRIDGE_REGION);
+  Serial.println("  -- radio not yet brought up, nothing is transmitted");
+  rule();
 
-  reportPlan();
-  reportFlash();
+  bridge::TableReport parseReport;
+  g_table = bridge::SlotTable::parse(std::string(kCompiledLayout), kFlashSize, &parseReport);
+
+  // A blank board has nothing provisioned, so this reports the zero-boot view:
+  // one connection, offering the first slot as though it were the only option.
+  g_state.boot.bootSlot = 0xFF;
+  const std::uint8_t provisioned = 0;
+  const bridge::ProvisioningView view =
+      bridge::provisionView(provisioned, bridge::Transport::Usb, bridge::maxSlotsForFlash(kFlashSize));
+  for (const bridge::Endpoint& e : view.endpoints) {
+    Serial.print("provisioning: ");
+    Serial.print(e.label);
+    Serial.print("  ");
+    Serial.print(e.framework[0] != '\0' ? e.framework : "(reserved)");
+    Serial.println("");
+  }
+
+  g_plan = bridge::resolvePlan(region(), FREQUENCY_MHZ);
+  g_radio = bridge::resolveRadioConfig(g_plan.plan, region(), TX_POWER_DBM);
+
+  reportPlan(g_plan);
+  rule();
+  reportRadio(g_radio);
+  rule();
+  reportFlash(g_table);
+  rule();
+  reportSlots(g_table, g_state);
+  rule();
+  reportRoles(g_table);
+  rule();
   reportIdentifier();
+  rule();
 
-  line("");
-  line("radio: not yet brought up. See docs/ARCHITECTURE.md for what is done");
-  line("and what is not. This build transmits nothing.");
+  bridge::PanelInputs in;
+  in.plan = &g_plan;
+  in.radio = &g_radio;
+  in.stats = &g_stats;
+  in.airtime = &g_airtime;
+  in.provisioning = &view;
+  in.table = &g_table;
+  in.device = &g_state;
+  in.nowMs = millis();
+  reportPanel(bridge::renderPanel(in));
 
-  // Deliberately no LoRa initialisation here yet. Bringing the radio up before
-  // the plan above is known-coherent is how a node ends up keyed into one mesh
-  // while its operator believes it serves two.
+  rule();
+  Serial.println("This build transmits nothing. See docs/ARCHITECTURE.md for what");
+  Serial.println("is done and what is not.");
+
+  // Deliberately no LoRa initialisation here yet. Bringing the radio up before the
+  // plan above is known-coherent is how a node ends up keyed into one mesh while
+  // its operator believes it serves two.
 }
 
 void loop() {
-  // Nothing to do until the radio path exists. Left empty rather than filled
-  // with a placeholder that pretends to be forwarding.
+  // Refresh the panel periodically so the airtime figure moves. The radio path
+  // will replace this with real frame accounting.
+  static uint32_t last = 0;
+  const uint32_t now = millis();
+  if (now - last < 2000) return;
+  last = now;
+
+  bridge::PanelInputs in;
+  in.plan = &g_plan;
+  in.radio = &g_radio;
+  in.stats = &g_stats;
+  in.airtime = &g_airtime;
+  in.table = &g_table;
+  in.device = &g_state;
+  in.nowMs = now;
+  reportPanel(bridge::renderPanel(in));
 }

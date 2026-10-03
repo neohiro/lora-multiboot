@@ -102,6 +102,45 @@ The bootloader sits below every slot and is never a candidate for any of this.
 There is always exactly one way back to a working board, and it does not depend on
 any slot holding firmware.
 
+## About "running both at once"
+
+Worth being precise, because it is easy to misread a slot table:
+
+**Slots are exclusive. One runs at a time, and it owns the single SX1262.** Two
+images cannot both drive the transceiver, and every role needs it — a "companion"
+carries traffic over LoRa as well as BLE, and the analyser needs the receiver
+promiscuous. Five slots means five *installed, switchable* frameworks with their
+settings preserved. Not five running ones.
+
+The one thing that genuinely serves both meshes simultaneously is the **bridge
+image**: a single firmware carrying both protocol stacks, which is exactly what the
+one-byte identifier is for. Slots and the bridge are not alternatives — the bridge
+is one slot that happens to serve two meshes.
+
+[`docs/ROLES.md`](docs/ROLES.md) covers what each slot can be and audits which
+combinations are worth deploying. It catches the one that bites in practice:
+**two slots with the same framework *and* the same role would advertise the same
+node identity**, so two "repeaters" form a single repeater that appears twice rather
+than a mesh of two. Different roles are fine — a MeshCore room server and a
+MeshCore repeater on one board is an ordinary deployment.
+
+## Updating without losing anything
+
+The system layer is everything below the first slot, and an update writes only
+that. Nothing at or above the cut is touched, which makes "update the bootloader" a
+routine operation rather than something needing a backup first.
+
+```bash
+python tools/flash.py list                                    # what an update touches
+python tools/flash.py update-system --bootloader boot.bin     # slots + settings preserved
+python tools/flash.py app 1 --app meshcore-1.2.3.bin          # reflash one slot only
+python tools/flash.py app 1 --erase                           # clear firmware, keep settings
+```
+
+A bad image is reflashable **without** losing channel keys — a firmware problem is
+not a reason to forget a node's identity on the mesh — and the destructive variant
+has to be asked for by name. [`docs/UPDATING.md`](docs/UPDATING.md)
+
 ## One antenna feed
 
 This needs **no antenna hardware whatsoever**, and that is structural rather than
@@ -122,12 +161,18 @@ summers.
 | `SlotTable` — layout geometry and framework isolation | done, tested |
 | `Provisioning` — zero-boot state machine, append-only growth | done, tested |
 | `SlotLifecycle` — provision, reflash, erase, retire, boot selection | done, tested |
+| `Airtime` — LoRa airtime math + sliding-window duty-cycle governor | done, tested |
+| `RadioPlan` — promiscuous-capture SX1262 config, regional power ceilings | done, tested |
+| `Statistics` — per-protocol counters, RSSI/SNR, airtime accounting | done, tested |
+| `StatusPanel` — 3-line OLED/CLI rendering | done, tested |
+| `Roles` — slot purposes + combination validity audit | done, tested |
+| `SystemUpdate` — bootloader/table updates that preserve every slot | done, tested |
 | `tools/flash.py` — validating flasher | done, tested |
 | SX1262 bring-up, promiscuous capture | **not written** |
 | Frame decode → cross-protocol relay | **not written** |
 | OLED / BLE provisioning UX | **not written** |
 
-408 assertions and 16 tool tests pass, compiled under `-Werror` with
+1,075 assertions and 20 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`.
 
 ## The gate
@@ -207,6 +252,8 @@ translation units rather than copies — a test cannot pass while the firmware r
 - [The identifier](docs/PROTOCOL-ID.md) — one byte, and what it does not cover
 - [RF plan](docs/RF-PLAN.md) — the shared carrier, and where it stops working
 - [Flash layout](docs/PARTITIONS.md) — progressive provisioning, in full
+- [Roles](docs/ROLES.md) — what each slot can be, and which combinations are valid
+- [Updating](docs/UPDATING.md) — changing the system layer without losing a thing
 
 ## Acknowledgements
 

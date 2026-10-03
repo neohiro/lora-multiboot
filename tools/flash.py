@@ -189,49 +189,252 @@ def chip_flash_size(port: str) -> int:
     return int(m.group(1)) * 1024 * 1024
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--table",
-        default="quadboot",
-        choices=["quadboot", "dualboot"],
-        help="partition layout to flash (default: quadboot, five slots)",
-    )
-    ap.add_argument("--bootloader", type=Path, required=True)
-    ap.add_argument("--part-table-bin", type=Path, required=True)
-    ap.add_argument("--otadata", type=Path, required=True)
-    ap.add_argument(
-        "--app",
-        type=Path,
-        action="append",
-        default=[],
-        metavar="LABEL=PATH",
-        help="application image for a slot, e.g. meshcore=.pio/build/.../firmware.bin",
-    )
-    ap.add_argument("--port")
-    ap.add_argument("--baud", default="460800")
-    ap.add_argument("--dry-run", action="store_true", help="validate and print, write nothing")
-    args = ap.parse_args()
+def system_pieces(csv_path: Path) -> dict[str, tuple[int, int]]:
+    """Pieces of the system layer: everything below the first slot.
 
+    A system update writes only these. Nothing at or above the first slot is
+    touched, which is what is meant by "updating the bootloader does not cost
+    anybody their firmwares or their settings".
+    """
+    parts = parse_csv(csv_path)
+    first_slot = None
+    for p in parts:
+        if p.label.startswith("ota_"):
+            first_slot = p.offset if first_slot is None else min(first_slot, p.offset)
+    if first_slot is None:
+        raise FlashError(f"{csv_path.name}: no app slots found")
+
+    out: dict[str, tuple[int, int]] = {}
+    for p in parts:
+        if p.offset + p.size > first_slot:
+            continue
+        out[p.label] = (p.offset, p.size)
+    return out
+
+
+def cmd_list(args) -> int:
+    """Show what is on the board without writing anything."""
     csv_path = PARTITION_DIR / f"{args.table}.csv"
-    if not csv_path.is_file():
-        raise FlashError(f"no such partition table: {csv_path}")
+    parts = parse_csv(csv_path)
 
+    print(f"layout: {csv_path.name}")
     try:
-        parts = parse_csv(csv_path)
+        validate(parts, args.flash_size * 1024 * 1024)
+        print("geometry: valid")
     except FlashError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"geometry: INVALID -- {exc}")
         return 2
 
+    first_slot = min(p.offset for p in parts if p.label.startswith("ota_"))
+    print(f"\nsystem layer (below 0x{first_slot:X}, rewritten by --update-system):")
+    for p in parts:
+        if p.offset + p.size <= first_slot:
+            print(f"  0x{p.offset:06X}  {p.label:<15} {p.size:>8} B   {p.subtype}")
+
+    print("\nslots (never touched by a system update):")
+    slot_parts = [p for p in parts if p.label.startswith("ota_")]
+    for i, p in enumerate(slot_parts):
+        fs_label = f"fs_{['meshcore', 'meshtastic', 'reticulum', 'lorawan', 'custom'][i]}"
+        fs = next((q for q in parts if q.label == fs_label), None)
+        line = f"  {p.label:<6} 0x{p.offset:06X}  app {p.size // 1024}K"
+        if fs:
+            line += f"   settings 0x{fs.offset:06X} ({fs.size // 1024}K, {fs.subtype})"
+        print(line)
+
+    print(
+        "\nNothing here has been read from the board: --list shows the layout the\n"
+        "table declares. Which slots actually hold firmware is device state stored\n"
+        "in NVS, readable over the CLI once firmware is running."
+    )
+    return 0
+
+
+def cmd_update_system(args) -> int:
+    """Rewrite the bootloader and partition table, preserving every slot."""
+    csv_path = PARTITION_DIR / f"{args.table}.csv"
+    pieces = system_pieces(csv_path)
+    print(f"layout: {csv_path.name}")
+
+    first_slot = min(p[0] for p in pieces.values() if True) if pieces else 0
+    region_end = 0
+    for offset, size in pieces.values():
+        region_end = max(region_end, offset + size)
+
+    wanted = {
+        "bootloader": args.bootloader,
+        "partition_tbl": args.part_table_bin,
+        "otadata": args.otadata,
+    }
+    plan: list[tuple[int, Path, str]] = []
+    for label, path in wanted.items():
+        if path is None:
+            continue
+        if label not in pieces:
+            raise FlashError(f"{csv_path.name} has no {label} row")
+        offset, capacity = pieces[label]
+        size = path.stat().st_size
+        if size > capacity:
+            raise FlashError(
+                f"{label}: {path.name} is {size} B but the partition is {capacity} B"
+            )
+        if offset + size > region_end:
+            raise FlashError(f"{label}: would extend past the system region")
+        plan.append((offset, path, label))
+
+    # Note on the partition table: it is written whenever it is asked for. The
+    # firmware-side planner skips an identical table when it knows the size matches,
+    # but this tool cannot know that without reading the chip back, so it does not
+    # claim to. An erase cycle per update, per node, is real over twenty years, so
+    # leave --part-table-bin off for a bootloader-only update.
+
+    if not plan:
+        print("\nnothing to write. Pass --bootloader and/or --part-table-bin.")
+        return 0
+
+    print("\nsystem update plan:")
+    for offset, path, label in plan:
+        print(f"  0x{offset:06X}  {label:<15} {path}")
+    print("\nslots and every settings partition are left untouched.")
+
+    if args.dry_run:
+        print("\ndry run: nothing written.")
+        return 0
+
+    return _run_esptool(args, plan)
+
+
+def cmd_app(args) -> int:
+    """Write, reflash or erase exactly one slot."""
+    csv_path = PARTITION_DIR / f"{args.table}.csv"
+    parts = parse_csv(csv_path)
+    label = f"ota_{args.slot}"
+    target = next((p for p in parts if p.label == label), None)
+    if target is None:
+        raise FlashError(f"{csv_path.name} has no {label}. It has: "
+                         + ", ".join(p.label for p in parts if p.label.startswith('ota_')))
+
+    if args.erase:
+        print(f"erasing {label} at 0x{target.offset:06X} ({target.size // 1024}K)")
+        print("The slot's settings partition is NOT touched.")
+        print("This is the right choice for recovering a bad image without losing")
+        print("your channel keys or node database.")
+        if args.dry_run:
+            print("\ndry run: nothing written.")
+            return 0
+        return _run_esptool(args, [(target.offset, None, label)])
+
+    if args.app is None:
+        raise FlashError("pass --app PATH (or --erase to clear the slot)")
+
+    path = args.app
+    size = path.stat().st_size
+    if size > target.size:
+        raise FlashError(
+            f"{path.name} is {size} B but {label} only has {target.size} B. "
+            "Shrink the image or pick another slot."
+        )
+    print(f"writing {path.name} ({size} B) to {label} at 0x{target.offset:06X}")
+    print("Only this slot is written. Other slots and all settings are untouched.")
+    if args.dry_run:
+        print("\ndry run: nothing written.")
+        return 0
+    return _run_esptool(args, [(target.offset, path, label)])
+
+
+def _run_esptool(args, plan) -> int:
+    if shutil.which("esptool") is None and shutil.which("esptool.py") is None:
+        print("error: esptool not found. Install it with: pip install esptool",
+              file=sys.stderr)
+        return 2
+    tool = shutil.which("esptool") or shutil.which("esptool.py")
+
+    port = find_port(getattr(args, "port", None))
+    flash_size = chip_flash_size(port) if getattr(args, "flash_size", 16) == 0 else \
+        args.flash_size * 1024 * 1024
+
+    cmd = [
+        tool,
+        "--chip", "esp32s3",
+        "--port", port,
+        "--baud", args.baud,
+        "--flash_mode", "dio",
+        "--flash_freq", "80m",
+        "--flash_size", f"{flash_size // (1024 * 1024)}MB",
+        "write_flash",
+    ]
+    for offset, path, label in plan:
+        if path is None:
+            # erase a region by writing an erase-only command
+            cmd += ["0x%X" % offset, "--erase"]
+            print(f"  erasing 0x{offset:06X} ({label})")
+        else:
+            cmd += ["0x%X" % offset, str(path)]
+    print("\nrunning esptool...")
+    return subprocess.run(cmd).returncode
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--table", default="quadboot", choices=["quadboot", "dualboot"],
+                    help="partition layout (default: quadboot)")
+    ap.add_argument("--port")
+    ap.add_argument("--baud", default="460800")
+    ap.add_argument("--flash-size", type=int, default=16,
+                    help="flash size in MB, or 0 to ask the chip (default: 16)")
+    ap.add_argument("--dry-run", action="store_true", help="validate and print, write nothing")
+
+    sub = ap.add_subparsers(dest="command")
+
+    p_list = sub.add_parser("list", help="show the layout and what a system update touches")
+    p_list.set_defaults(func=cmd_list)
+
+    p_sys = sub.add_parser(
+        "update-system",
+        help="rewrite bootloader and/or partition table; slots and settings are preserved",
+    )
+    p_sys.add_argument("--bootloader", type=Path)
+    p_sys.add_argument("--part-table-bin", type=Path)
+    p_sys.add_argument("--otadata", type=Path)
+    p_sys.set_defaults(func=cmd_update_system)
+
+    p_app = sub.add_parser("app", help="write, reflash or erase one slot")
+    p_app.add_argument("slot", type=int, help="slot number, e.g. 0 or 1")
+    p_app.add_argument("--app", type=Path, help="firmware image to write into the slot")
+    p_app.add_argument("--erase", action="store_true",
+                       help="erase the slot's firmware, keeping its settings")
+    p_app.set_defaults(func=cmd_app)
+
+    # Legacy full-flash path, kept because it is still the right thing when
+    # setting a board up for the first time.
+    p_full = sub.add_parser("full", help="write bootloader, table and any slots (first setup)")
+    p_full.add_argument("--bootloader", type=Path, required=True)
+    p_full.add_argument("--part-table-bin", type=Path, required=True)
+    p_full.add_argument("--otadata", type=Path)
+    p_full.add_argument("--app", type=Path, action="append", default=[], metavar="LABEL=PATH")
+    p_full.set_defaults(func=cmd_full)
+
+    args = ap.parse_args()
+    if not getattr(args, "command", None):
+        args = ap.parse_args(["--help"])
+
+    if args.command == "list":
+        return cmd_list(args)
+    if args.command == "update-system":
+        return cmd_update_system(args)
+    if args.command == "app":
+        return cmd_app(args)
+    if args.command == "full":
+        return cmd_full(args)
+    ap.print_help()
+    return 2
+
+
+def cmd_full(args) -> int:
+    csv_path = PARTITION_DIR / f"{args.table}.csv"
+    parts = parse_csv(csv_path)
     print(f"partition table: {csv_path.name}  ({len(parts)} partitions)")
 
-    port = args.port
-    if not args.dry_run and not port:
-        port = find_port(None)
-
-    flash_size = chip_flash_size(port) if port and not args.dry_run else 16 * 1024 * 1024
-    print(f"flash size:      {flash_size // (1024 * 1024)}MB")
-
+    flash_size = args.flash_size * 1024 * 1024
     try:
         validate(parts, flash_size)
     except FlashError as exc:
@@ -246,71 +449,33 @@ def main() -> int:
             raise FlashError(f"--app expects LABEL=PATH, got {item!r}")
         label, path = item.split("=", 1)
         if label not in by_label:
-            raise FlashError(
-                f"no partition labelled {label!r} in {csv_path.name}. "
-                f"It has: {', '.join(sorted(by_label))}"
-            )
+            raise FlashError(f"no partition labelled {label!r} in {csv_path.name}")
         args_map[label] = Path(path)
 
-    for required in ("bootloader", "partition_tbl"):
-        if required not in by_label:
-            raise FlashError(f"{csv_path.name} has no {required} row")
-
-    plan: list[tuple[int, Path]] = [
-        (by_label["bootloader"].offset, args.bootloader),
-        (by_label["partition_tbl"].offset, args.part_table_bin),
+    plan: list[tuple[int, Path, str]] = [
+        (by_label["bootloader"].offset, args.bootloader, "bootloader"),
+        (by_label["partition_tbl"].offset, args.part_table_bin, "partition_tbl"),
     ]
-    if "otadata" in by_label:
-        plan.append((by_label["otadata"].offset, args.otadata))
+    if args.otadata is not None:
+        plan.append((by_label["otadata"].offset, args.otadata, "otadata"))
     for label, path in sorted(args_map.items()):
         part = by_label[label]
         if part.size and path.stat().st_size > part.size:
-            raise FlashError(
-                f"{path.name} is {path.stat().st_size} bytes but {label} only has "
-                f"{part.size}. Shrink the image or pick a bigger slot."
-            )
-        plan.append((part.offset, path))
+            raise FlashError(f"{path.name} does not fit {label}")
+        plan.append((part.offset, path, label))
 
-    for offset, path in plan:
+    for _, path, _ in plan:
         if not path.is_file():
             raise FlashError(f"missing file: {path}")
 
     print("\nwrite plan:")
-    for offset, path in plan:
-        print(f"  0x{offset:06X}  {path}")
-
-    if not args_map:
-        print(
-            "\nnote: no --app given, so only the bootloader, partition table and "
-            "otadata\n      will be written. Pass --app meshcore=... --app "
-            "meshtastic=...\n      to fill the slots."
-        )
+    for offset, path, label in plan:
+        print(f"  0x{offset:06X}  {label:<15} {path}")
 
     if args.dry_run:
         print("\ndry run: nothing written.")
         return 0
-
-    if shutil.which("esptool") is None and shutil.which("esptool.py") is None:
-        print("error: esptool not found. Install it with: pip install esptool", file=sys.stderr)
-        return 2
-    tool = shutil.which("esptool") or shutil.which("esptool.py")
-
-    cmd = [
-        tool,
-        "--chip", "esp32s3",
-        "--port", port,
-        "--baud", args.baud,
-        "--flash_mode", "dio",
-        "--flash_freq", "80m",
-        "--flash_size", f"{flash_size // (1024 * 1024)}MB",
-        "write_flash",
-        "-z",
-    ]
-    for offset, path in plan:
-        cmd += [f"0x{offset:X}", str(path)]
-
-    print("\nrunning esptool...")
-    return subprocess.run(cmd).returncode
+    return _run_esptool(args, plan)
 
 
 if __name__ == "__main__":

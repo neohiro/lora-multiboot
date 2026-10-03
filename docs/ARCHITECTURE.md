@@ -19,16 +19,22 @@ differ by one byte in the preamble. Everything else follows from that.
 | `SlotTable` — layout geometry and framework isolation | **Done, tested** |
 | `Provisioning` — zero-boot state machine, append-only slot growth | **Done, tested** |
 | `SlotLifecycle` — provision, reflash, erase, retire, boot selection | **Done, tested** |
+| `Airtime` — LoRa airtime math + sliding-window duty-cycle governor | **Done, tested** |
+| `RadioPlan` — promiscuous-capture SX1262 config, regional power ceilings | **Done, tested** |
+| `Statistics` — per-protocol counters, RSSI/SNR, airtime accounting | **Done, tested** |
+| `StatusPanel` — 3-line OLED/CLI rendering | **Done, tested** |
+| `Roles` — slot purposes + combination validity audit | **Done, tested** |
+| `SystemUpdate` — bootloader/table updates that preserve every slot | **Done, tested** |
 | `tools/gate.py` — the gate driver | **Done, tested** |
 | `tools/flash.py` — validating flasher | **Done, tested** |
-| Radio bring-up (SX1262, promiscuous capture) | **Not written** |
+| SX1262 bring-up, promiscuous capture | **Not written** |
 | Frame decode → cross-protocol relay | **Not written** |
-| OLED / BLE provisioning UX | **Not written** |
+| OLED / BLE rendering of the panel | **Not written** (rendering is tested; no driver yet) |
 
-408 assertions and 16 tool tests pass, compiled under `-Werror` with
+1,075 assertions and 20 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`. The current firmware boots, validates
-its own plan and layout, prints both, and **transmits nothing**.
-`firmware/src/main.cpp` says so on the serial log rather than pretending
+its own plan and layout, and reports every one of these on the serial log — and
+**transmits nothing**. `firmware/src/main.cpp` says so rather than pretending
 otherwise. What exists is the part worth getting right before any RF leaves the
 board, and the part that is testable without hardware.
 

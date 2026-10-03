@@ -50,6 +50,12 @@ int main(int argc, char** argv) {
   suite_slot_table();
   suite_provisioning();
   suite_slot_lifecycle();
+  suite_airtime();
+  suite_radio_plan();
+  suite_statistics();
+  suite_status_panel();
+  suite_roles();
+  suite_system_update();
   suite_partition_csv(tables.data(), static_cast<int>(tables.size()));
 
   std::printf("\n%d checks, %d failed\n", harness::checks(), harness::failures());

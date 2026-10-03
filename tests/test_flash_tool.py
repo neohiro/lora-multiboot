@@ -153,5 +153,49 @@ class Rejections(unittest.TestCase):
             flash.validate(parts, 8 * 1024 * 1024)
 
 
+class SystemLayer(unittest.TestCase):
+    """The system layer must be everything below the first slot, and no more."""
+
+    def test_pieces_are_all_below_the_first_slot(self):
+        for name in ("quadboot", "dualboot"):
+            pieces = flash.system_pieces(PARTITION_DIR / f"{name}.csv")
+            self.assertIn("bootloader", pieces, name)
+            self.assertIn("partition_tbl", pieces, name)
+            self.assertIn("otadata", pieces, name)
+            self.assertIn("nvs", pieces, name)
+
+            parts = flash.parse_csv(PARTITION_DIR / f"{name}.csv")
+            first_slot = min(p.offset for p in parts if p.label.startswith("ota_"))
+            for label, (offset, size) in pieces.items():
+                self.assertLessEqual(
+                    offset + size, first_slot,
+                    f"{name}: {label} runs past the first slot",
+                )
+
+    def test_no_slot_is_in_the_system_layer(self):
+        # A slot in the system layer would mean a system update could overwrite a
+        # firmware image, which is the one thing it must never do.
+        for name in ("quadboot", "dualboot"):
+            pieces = flash.system_pieces(PARTITION_DIR / f"{name}.csv")
+            for label in pieces:
+                self.assertFalse(label.startswith("ota_"), f"{name}: {label} is a slot")
+                self.assertFalse(label.startswith("fs_"), f"{name}: {label} is a filesystem")
+
+    def test_matches_the_first_slot_cut(self):
+        # 0x30000 is the cut, and it is the invariant the C++ side asserts too.
+        pieces = flash.system_pieces(PARTITION_DIR / "quadboot.csv")
+        self.assertEqual(pieces["coredump"][0] + pieces["coredump"][1], 0x30000)
+
+    def test_refuses_a_table_with_no_slots(self):
+        import tempfile
+
+        f = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False)
+        f.write("bootloader, app, factory, 0x0, 0x7000,\n")
+        f.close()
+        self.addCleanup(lambda: Path(f.name).unlink(missing_ok=True))
+        with self.assertRaises(flash.FlashError):
+            flash.system_pieces(Path(f.name))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
