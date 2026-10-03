@@ -2,6 +2,7 @@
 
 #include "bridge/SlotLifecycle.hpp"
 
+
 #include <cstdio>
 
 namespace bridge {
@@ -23,6 +24,38 @@ SlotOpResult failure(const SlotTable& table, const DeviceState& state, const cha
 }
 
 }  // namespace
+
+
+std::string freeSlotName(const char* hardware) {
+  // Named for what it is for, not for where it lives. This string is what somebody
+  // reads while holding a screwdriver, so it says Free and it says what the board
+  // is.
+  return std::string("Free ") +
+         (hardware != nullptr && hardware[0] != '\0' ? hardware : "LoRa") + " slot";
+}
+
+std::uint8_t provisionableSlots(const SlotTable& table) {
+  const std::uint8_t declared = provisionedSlots(table);
+  return declared > kReservedFreeSlots
+             ? static_cast<std::uint8_t>(declared - kReservedFreeSlots)
+             : 0;
+}
+
+bool slotIsProvisionable(const SlotTable& table, std::uint8_t index) {
+  const std::uint8_t declared = provisionedSlots(table);
+  if (declared == 0 || index >= declared) return false;
+  // The last slot in the table is the recovery slot and stays empty.
+  return index + kReservedFreeSlots < declared;
+}
+
+std::uint8_t freeSlots(const SlotTable& table, const DeviceState& state) {
+  const std::uint8_t declared = provisionedSlots(table);
+  std::uint8_t n = 0;
+  for (std::uint8_t i = 0; i < declared; ++i) {
+    if (!state.isProvisioned(i)) ++n;
+  }
+  return n;
+}
 
 const char* slotStateName(SlotState state) {
   switch (state) {
@@ -105,6 +138,15 @@ SlotOpResult provision(const SlotTable& table, const DeviceState& state, std::ui
   const Partition* app = table.find(appLabel(index));
   if (app == nullptr) {
     return failure(table, state, "no such slot in the partition table");
+  }
+  // The final slot is the recovery slot and stays empty on purpose. A board whose
+  // last free slot has been filled has no way back: the flasher cannot write a fixed
+  // image, the bootloader has no rescue path, and the owner needs physical access to
+  // a node that is probably on a mast.
+  if (!slotIsProvisionable(table, index)) {
+    return failure(table, state,
+                   "this is the reserved free slot; it stays empty so the board can "
+                   "always be recovered");
   }
   if (state.isProvisioned(index)) {
     return failure(table, state, "slot already holds firmware; use reflash");
@@ -225,6 +267,122 @@ SlotOpResult retireSlot(const SlotTable& table, const DeviceState& state, std::u
   r.state = state;
   r.table = SlotTable::parse(renderSlots(top - 1), table.flashSizeBytes());
   r.touched.push_back(index);
+  return r;
+}
+
+const Partition* otaStagingRegion(const SlotTable& table) { return table.find(kOtaStagingLabel); }
+
+ReclaimResult reclaimSlot(const SlotTable& table, const DeviceState& state,
+                          std::uint8_t index) {
+  ReclaimResult r;
+  r.index = index;
+
+  const auto refuse = [&](const char* why) {
+    r.ok = false;
+    r.detail = why;
+    r.table = table;
+    return r;
+  };
+
+  const Partition* app = table.find(appLabel(index));
+  if (app == nullptr) return refuse("no such slot to reclaim");
+
+  // Erasing and reclaiming are separate requests, and conflating them is how
+  // somebody removes a framework and loses the node's identity at the same time.
+  if (state.isProvisioned(index)) {
+    return refuse("slot still holds firmware; erase it first, deliberately");
+  }
+
+  const Partition* fs = table.find(slotFsLabel(index));
+  if (fs != nullptr && fs->size != 0 && state.isProvisioned(index)) {
+    return refuse("slot still holds firmware");
+  }
+
+  // If a staging region already exists it would collide with this hole, so the
+  // operation is refused rather than silently producing an overlapping table. Checked
+  // before the reserve rule, because it is the more specific of the two answers.
+  if (otaStagingRegion(table) != nullptr) {
+    return refuse("an OTA staging region already exists; retire the top slot instead");
+  }
+
+  // The reserve has to stay addressable and empty. Reclaiming it would leave a board
+  // with no free slot at all, which is the situation everything here exists to avoid.
+  const std::uint8_t declared = provisionedSlots(table);
+  if (index + kReservedFreeSlots >= declared) {
+    return refuse("this is the reserved free slot; it must stay available");
+  }
+
+  const std::uint32_t fsOffset = fs != nullptr ? fs->offset : app->offset + app->size;
+  const std::uint32_t fsSize = fs != nullptr ? fs->size : 0;
+  const std::uint32_t holeStart = app->offset;
+  const std::uint32_t holeEnd = fs != nullptr ? fsOffset + fsSize : app->offset + app->size;
+
+  // Rebuild the table with this slot's rows dropped and the hole declared as a
+  // staging partition. Every other slot's rows are emitted unchanged, which is the
+  // whole safety argument: there is no arithmetic here that could move anything.
+  std::string csv =
+      "bootloader,     app,  factory, 0x0,      0x7000,\n"
+      "partition_tbl,  data, nvs,     0x8000,   0xC000,\n"
+      "otadata,        data, otadata, 0x14000,  0x2000,\n"
+      "nvs,            data, nvs,     0x16000,  0xA000,\n"
+      "coredump,       data, coredump,0x20000,  0x10000,\n";
+
+  for (std::uint8_t i = 0; i < declared; ++i) {
+    if (i == index) continue;  // the hole
+    const Partition* a = table.find(appLabel(i));
+    const Partition* f = table.find(slotFsLabel(i));
+    if (a != nullptr) {
+      char row[96];
+      std::snprintf(row, sizeof(row), "%-14s, app , %-9s, 0x%X, 0x%X,\n", a->label.c_str(),
+                    a->subType == PartSubType::Factory   ? "factory "
+                    : a->subType == PartSubType::Ota_0    ? "ota_0   "
+                    : a->subType == PartSubType::Ota_1    ? "ota_1   "
+                    : a->subType == PartSubType::Ota_2    ? "ota_2   "
+                    : a->subType == PartSubType::Ota_3    ? "ota_3   "
+                    : a->subType == PartSubType::Ota_4    ? "ota_4   "
+                                                            : "ota_0   ",
+                    a->offset, a->size);
+      csv += row;
+    }
+    if (f != nullptr) {
+      char row[96];
+      std::snprintf(row, sizeof(row), "%-14s, data, %-9s, 0x%X, 0x%X,\n", f->label.c_str(),
+                    f->subType == PartSubType::LittleFs ? "littlefs" : "spiffs  ",
+                    f->offset, f->size);
+      csv += row;
+    }
+  }
+
+  // The reclaimed hole, held for OTA staging.
+  char stage[96];
+  std::snprintf(stage, sizeof(stage), "%-14s, data, reserved, 0x%X, 0x%X,\n", kOtaStagingLabel,
+                holeStart, holeEnd - holeStart);
+  csv += stage;
+
+  TableReport pr;
+  const SlotTable rebuilt = SlotTable::parse(csv, table.flashSizeBytes(), &pr);
+  if (!pr.ok()) return refuse("the rebuilt table did not parse");
+  const TableReport v = rebuilt.validate();
+  if (!v.ok()) return refuse("the rebuilt table would be invalid");
+
+  // Prove the invariant instead of asserting it in a comment: every surviving slot
+  // must still be at exactly the offset and size it had.
+  for (std::uint8_t i = 0; i < declared; ++i) {
+    if (i == index) continue;
+    const Partition* before = table.find(appLabel(i));
+    const Partition* after = rebuilt.find(appLabel(i));
+    if (before == nullptr || after == nullptr || before->offset != after->offset ||
+        before->size != after->size) {
+      return refuse("rebuilding would relocate a surviving slot");
+    }
+  }
+
+  r.ok = true;
+  r.detail = "reclaimed as OTA staging space";
+  r.freedOffset = holeStart;
+  r.freedBytes = holeEnd - holeStart;
+  r.table = rebuilt;
+  r.totalFreeBytes = rebuilt.freeBytes();
   return r;
 }
 

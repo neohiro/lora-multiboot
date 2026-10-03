@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
     tables.push_back(t);
   }
 
-  std::printf("meshcore-meshtastic-heltec-v4 :: portable logic gate\n");
+  std::printf("lora-multiboot :: portable logic gate\n");
 
   suite_protocol_id();
   suite_channel_plan();
@@ -56,6 +56,9 @@ int main(int argc, char** argv) {
   suite_status_panel();
   suite_roles();
   suite_system_update();
+  suite_shared_context();
+  suite_reclaim();
+  suite_radio_profiles();
   suite_partition_csv(tables.data(), static_cast<int>(tables.size()));
 
   std::printf("\n%d checks, %d failed\n", harness::checks(), harness::failures());

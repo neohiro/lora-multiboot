@@ -30,7 +30,7 @@ int main() {
   std::printf("%u\\n", static_cast<unsigned>(max));
   std::printf("%s", bridge::renderSlots(max).c_str());
   std::printf("\\n@@SPLIT@@\\n");
-  std::printf("%s", bridge::renderSlots(2).c_str());
+  std::printf("%s", bridge::renderSlots(3).c_str());
   return 0;
 }
 """
@@ -134,7 +134,7 @@ def main() -> int:
 
     (PART_DIR / "dualboot.csv").write_text(
         HEADER_NOTE.format(
-            title="two slots, nothing held back.",
+            title="three slots: two usable, one permanently free.",
             body=(
                 "Just MeshCore and Meshtastic, with the rest of the flash left free.\n"
                 "# A valid choice: a board is not obliged to reserve room it will never use.\n"
@@ -152,7 +152,7 @@ def main() -> int:
     )
 
     print(f"wrote {PART_DIR / 'quadboot.csv'} ({max_slots} slots)")
-    print(f"wrote {PART_DIR / 'dualboot.csv'} (2 slots)")
+    print(f"wrote {PART_DIR / 'dualboot.csv'} (3 slots: 2 usable + 1 reserved free)")
     return 0
 
 

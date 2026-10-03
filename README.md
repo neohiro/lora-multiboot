@@ -1,32 +1,52 @@
-<h1 align="center">meshcore-meshtastic-heltec-v4</h1>
+<h1 align="center">lora-multiboot</h1>
 
 <p align="center">
-  One Heltec LoRa 32 V4 whose single SX1262 serves <b>both</b> a Meshtastic mesh
-  and a MeshCore mesh — at the same time, on the same carrier, with no second
-  radio.
+  A role-aware <b>multi-slot firmware platform</b> for single-radio LoRa devices.
+  Five switchable firmware roles on one antenna, progressive provisioning from
+  nothing, and system updates that cost nobody their settings.
 </p>
 
 <p align="center">
-  <a href="https://github.com/neohiro/meshcore-meshtastic-heltec-v4/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/neohiro/meshcore-meshtastic-heltec-v4/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/neohiro/lora-multiboot/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/neohiro/lora-multiboot/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg">
   <img alt="Board" src="https://img.shields.io/badge/board-Heltec%20LoRa%2032%20V4-16MB%20flash-orange">
+  <img alt="Shared RAM" src="https://img.shields.io/badge/shared%20RAM-560%20B%20for%20all%20slots-blue">
 </p>
 
 ---
 
 > [!IMPORTANT]
-> **This is an architecture and its groundwork, not a working repeater.** The
-> logic that decides which mesh a frame belongs to, whether a region's radio
-> plan is coherent, and whether a flash layout is safe is written and tested. The
-> radio bring-up is not written, and the firmware **transmits nothing** today.
-> [Status](#status) says exactly what exists.
+> **This is an architecture and its groundwork, not a working repeater.** The logic
+> that decides which mesh a frame belongs to, whether a region's radio plan is
+> coherent, whether a flash layout is safe, and how much airtime is left is written
+> and tested. The radio bring-up is not written, and the firmware **transmits
+> nothing** today. [Status](#status) says exactly what exists.
 
-## Why this is possible at all
+## Why "multi-boot" and not "meshtastic + meshcore"
+
+The name says what the project turned out to be.
+
+It started as "run Meshtastic and MeshCore on one Heltec V4", which was a question
+about two projects and one board. It is now a question about **any number of LoRa
+firmware roles on one radio**, of which Meshtastic and MeshCore are the first two.
+
+What that scope added:
+
+- A **role model** — repeater, companion, room server, router, tracker, analyser,
+  and this project's own two-mesh bridge image — with an audit of which
+  combinations of slots are actually valid. [docs/ROLES.md](docs/ROLES.md)
+- **Progressive provisioning** from a blank board: one connection and one obvious
+  choice, then two, then three. [docs/PARTITIONS.md](docs/PARTITIONS.md)
+- **Non-destructive updating**: a Heltec update must not cost anybody their
+  firmware or their channel keys. [docs/UPDATING.md](docs/UPDATING.md)
+- A **shared RAM block** so adding a slot costs flash and zero shared RAM.
+
+## The enabling fact
 
 A Heltec V4 has one SX1262, and a single radio is a single physical peripheral —
 one firmware owns it at a time. That is the constraint everyone hits first.
 
-Then it turns out the constraint does not apply here:
+Then it turns out the constraint does not apply to the interesting case:
 
 | | Meshtastic `EU_868` LongFast | MeshCore default |
 |---|---|---|
@@ -102,6 +122,43 @@ The bootloader sits below every slot and is never a candidate for any of this.
 There is always exactly one way back to a working board, and it does not depend on
 any slot holding firmware.
 
+## Memory: adding a slot costs flash, not RAM
+
+A multi-slot board is only interesting if it is cheap, and on a microcontroller
+"cheap" is measured in bytes. So the fixed overhead lives in **one shared block**:
+
+```
+SharedContext = 560 bytes total, for a five-slot board
+  airtime governor   280 B   (32 time buckets)
+  frame counters     192 B
+  radio config        32 B
+  plan, boot, slots   36 B
+```
+
+Everything in that block is identical no matter how many slots are installed,
+because there is exactly one radio, one RF plan and one airtime limit on the board.
+Slot count is **one byte**; sixteen provisioned slots cost **two bytes** of mask.
+
+That is the claim that makes the architecture viable: **installing a fifth
+firmware role adds no shared RAM at all.** The alternative — each slot keeping its
+own plan and counters — would multiply the fixed overhead by the slot count to
+store information that is by construction the same in all of them.
+
+Three things enforce it rather than merely asserting it:
+
+- `static_assert(sizeof(SharedContext) <= 1024)` fails the build if the block ever
+  outgrows its budget.
+- `static_assert(is_trivially_copyable<SharedContext>)` keeps it a plain data
+  structure, so a slot can read the block without linking this code, and it can live
+  in a fixed RAM section at a known address.
+- The block is version-stamped. With several firmwares on one board a layout
+  mismatch is a realistic failure, and a stale slot refuses rather than misreading
+  fields it does not understand.
+
+The airtime budget is shared for a compliance reason too: the 10% limit applies to
+the **antenna**, not to each slot individually. A board with five slots that each
+believed they had the whole budget would be five times over it.
+
 ## About "running both at once"
 
 Worth being precise, because it is easy to misread a slot table:
@@ -123,6 +180,53 @@ combinations are worth deploying. It catches the one that bites in practice:
 node identity**, so two "repeaters" form a single repeater that appears twice rather
 than a mesh of two. Different roles are fine — a MeshCore room server and a
 MeshCore repeater on one board is an ordinary deployment.
+
+## One slot is always free
+
+Every board reserves its final slot, named **"Free Heltec LoRa 32 V4 slot"** — the
+name says what it is for, which is what somebody holding a screwdriver needs. It
+cannot be provisioned, so the usable count is **N−1**:
+
+| Layout | Slots | Usable |
+|---|---|---|
+| `quadboot.csv` | 5 | 4 |
+| `dualboot.csv` | 3 | 2 |
+
+## Uninstalling from the middle: no loss, and no compaction
+
+Removing a framework from a middle slot loses no memory and breaks nothing. Closing
+the gap by moving the slots above it down would reclaim everything and destroy live
+firmware — it is exactly how a repartition ruins somebody's mesh, and it breaks the
+arithmetic addressing (`0x30000 + n × 0x300000`) that makes growth safe at all.
+
+So a reclaimed slot does not become a numbered slot again. Its 3 MB becomes an **OTA
+staging region**: somewhere to receive the next image for a slot before switching to
+it. Reclaiming what you have finished with pays for in-place updates of what you
+kept, with nothing moving and no USB cable on a board that is on a mast.
+
+The one real trade: growth is refused once staging space is held, because growth is
+arithmetic and would land a slot on top of the hole. Deferring growth is a decision
+you make on your own schedule; an overlapping partition table is a brick.
+
+## Per-framework radio settings, and one master RX
+
+Frameworks bring their own TX settings. Reconciling them by *averaging* would be
+physically wrong — SF11 is 2048 chips per symbol and SF9 is 512, so there is no
+value between them that decodes either, and the same is true of frequency and coding
+rate.
+
+But **bandwidth and preamble do have compatible supersets**, so the "most powerful"
+RX configuration masters the weaker ones honestly: a receiver wider than the signal
+decodes it perfectly well, so the merge is the **maximum** bandwidth and the
+**longer** preamble. Spreading factor and coding rate are not masterable in either
+direction, and the code says so rather than producing a receiver that hears nothing.
+
+So on a board whose firmware all shares a carrier — the normal case, and the premise
+here — one master configuration hears every installed framework, differing only in
+the sync words it accepts promiscuously.
+
+None of it is mandatory: a profile may declare that it sets nothing, and the board
+defaults are a complete, legal configuration on their own.
 
 ## Updating without losing anything
 
@@ -172,7 +276,7 @@ summers.
 | Frame decode → cross-protocol relay | **not written** |
 | OLED / BLE provisioning UX | **not written** |
 
-1,075 assertions and 20 tool tests pass, compiled under `-Werror` with
+1,231 assertions and 20 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`.
 
 ## The gate
@@ -253,6 +357,8 @@ translation units rather than copies — a test cannot pass while the firmware r
 - [RF plan](docs/RF-PLAN.md) — the shared carrier, and where it stops working
 - [Flash layout](docs/PARTITIONS.md) — progressive provisioning, in full
 - [Roles](docs/ROLES.md) — what each slot can be, and which combinations are valid
+- [Slots](docs/SLOTS.md) - the reserved free slot, reclaiming space, live-app views
+- [Radio profiles](docs/RADIO-PROFILES.md) - per-framework TX settings, master RX
 - [Updating](docs/UPDATING.md) — changing the system layer without losing a thing
 
 ## Acknowledgements

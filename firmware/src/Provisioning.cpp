@@ -2,6 +2,8 @@
 
 #include "bridge/Provisioning.hpp"
 
+#include "bridge/SlotLifecycle.hpp"
+
 #include <cstdio>
 
 namespace bridge {
@@ -215,9 +217,29 @@ SlotTable growTable(const SlotTable& existing, std::uint32_t flashSizeBytes,
   // move anything that already exists -- which is the entire safety argument
   // for rewriting a partition table in place, and the reason it is stated as a
   // rebuild instead of an insert.
+  // Reclaiming a middle slot leaves an OTA staging region in the hole. Growth is
+  // arithmetic and rebuilds geometry from the slot count, so it would neither see
+  // the hole nor preserve it -- it would quietly write a numbered slot straight on
+  // top. Refuse before touching anything: growth is the operation an operator can
+  // defer, whereas a partition table that overlaps is a brick.
+  if (otaStagingRegion(existing) != nullptr) {
+    local.status = TableStatus::Overlap;
+    local.detail = "cannot grow while an OTA staging region occupies the next slot";
+    if (report) *report = local;
+    return SlotTable();
+  }
+
   TableReport pr;
   SlotTable out = SlotTable::parse(renderSlots(static_cast<std::uint8_t>(next + 1), flashSizeBytes),
                                    flashSizeBytes, &pr);
+
+  const TableReport geometry = out.validate();
+  if (!geometry.ok()) {
+    local.status = geometry.status;
+    local.detail = geometry.detail;
+    if (report) *report = local;
+    return SlotTable();
+  }
 
   // Prove the invariant rather than assert it in a comment: every app slot that
   // existed before must still exist, at the same offset and the same size.

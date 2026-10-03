@@ -39,6 +39,62 @@ DeviceState twoLive() {
 void suite_slot_lifecycle() {
   harness::suite("SlotLifecycle");
 
+  // --- the reserved free slot -----------------------------------------------
+  //
+  // The last slot in the table can never be provisioned. A board whose last free
+  // slot has been filled has no obvious target to write a recovery image into, and
+  // the person who discovers that is standing on a ladder in the rain.
+  {
+    const SlotTable one = tableWith(1);
+    CHECK_MSG(provisionableSlots(one) == 0, "a one-slot table is entirely reserve");
+    CHECK(!slotIsProvisionable(one, 0));
+
+    const SlotTable two = tableWith(2);
+    CHECK_MSG(provisionableSlots(two) == 1, "two slots yield one usable");
+    CHECK(slotIsProvisionable(two, 0));
+    CHECK(!slotIsProvisionable(two, 1));
+
+    const SlotTable five = tableWith(5);
+    CHECK_MSG(provisionableSlots(five) == 4, "five slots yield four usable");
+    for (std::uint8_t i = 0; i < 4; ++i) CHECK(slotIsProvisionable(five, i));
+    CHECK_MSG(!slotIsProvisionable(five, 4), "the last one is reserve");
+
+    // The name says what it is for, because that is what an operator reads.
+    const std::string n = freeSlotName("Heltec LoRa 32 V4");
+    CHECK_MSG(n.find("Free") == 0, n);
+    CHECK_MSG(n.find("slot") != std::string::npos, n);
+    CHECK(n.find("Heltec") != std::string::npos);
+    // A missing hardware name must not produce a broken string.
+    CHECK(freeSlotName(nullptr).size() > 0);
+    CHECK(freeSlotName("").size() > 0);
+  }
+
+  {
+    // Provisioning the reserve is refused by name, and the reason is the reason.
+    const SlotTable t = tableWith(2);
+    DeviceState blank;
+    const SlotOpResult r = provision(t, blank, 1, kImage);
+    CHECK_MSG(!r.ok, "the reserved slot cannot be filled");
+    CHECK_MSG(std::string(r.detail).find("reserved free slot") != std::string::npos, r.detail);
+    CHECK_MSG(r.touchedOnly(0xFF), "a refused provision writes nothing");
+    CHECK_MSG(!r.state.isProvisioned(1), "and changes no state");
+  }
+
+  {
+    // Filling every usable slot must still leave the reserve free.
+    const SlotTable t = tableWith(5);
+    DeviceState s;
+    for (std::uint8_t i = 0; i < provisionableSlots(t); ++i) {
+      const SlotOpResult r = provision(t, s, i, kImage);
+      REQUIRE(r.ok);
+      s = r.state;
+    }
+    CHECK_MSG(freeSlots(t, s) == 1, "exactly one free slot always remains");
+    CHECK_MSG(!s.isProvisioned(4), "and it is the reserved one");
+    // And the board can still be written to.
+    CHECK_MSG(slotIsProvisionable(t, 0), "the reserve is the only place left to write");
+  }
+
   // --- the board always has a way back ---------------------------------------
 
   {
@@ -51,7 +107,8 @@ void suite_slot_lifecycle() {
   // --- provision: the first firmware on a blank board becomes the boot target
 
   {
-    const SlotTable t = tableWith(1);
+    // A 2-slot table: slot 0 is usable, slot 1 is the reserve.
+    const SlotTable t = tableWith(2);
     DeviceState blank;
     const SlotOpResult r = provision(t, blank, 0, kImage);
     REQUIRE(r.ok);
@@ -64,7 +121,8 @@ void suite_slot_lifecycle() {
 
   {
     // A second framework must not steal the boot target from a working board.
-    const SlotTable t = tableWith(3);
+    // Four slots, so slot 2 is usable and slot 3 is the reserve.
+    const SlotTable t = tableWith(4);
     const DeviceState s = twoLive();
     const SlotOpResult r = provision(t, s, 2, kImage);
     REQUIRE(r.ok);
@@ -78,7 +136,7 @@ void suite_slot_lifecycle() {
   // --- refusals: an image that does not fit would be silently truncated -----
 
   {
-    const SlotTable t = tableWith(3);
+    const SlotTable t = tableWith(4);
     const DeviceState s = twoLive();
     CHECK(!provision(t, s, 2, 0).ok);
     CHECK(!provision(t, s, 2, kSlotAppBytes + 1).ok);
@@ -276,7 +334,8 @@ void suite_slot_lifecycle() {
   // --- a full lifecycle leaves the board coherent --------------------------
 
   {
-    SlotTable t = tableWith(1);
+    // A board with room to actually provision: two usable slots plus the reserve.
+    SlotTable t = tableWith(3);
     DeviceState s;
 
     // Provision, grow, provision, reflash, erase, retire, regrow.
@@ -304,11 +363,17 @@ void suite_slot_lifecycle() {
     t = r.table;
     s = r.state;
 
-    r = retireSlot(t, s, 1);
+    // Retirement only ever applies to the top slot: reclaiming a hole in the middle
+    // would mean moving everything above it, which is the operation that destroys
+    // live firmware. So the table shrinks from the top and the reserve follows it
+    // down.
+    const std::uint8_t before = provisionedSlots(t);
+    r = retireSlot(t, s, static_cast<std::uint8_t>(before - 1));
     REQUIRE(r.ok);
     t = r.table;
     s = r.state;
-    CHECK_EQ(provisionedSlots(t), 1);
+    CHECK_MSG(provisionedSlots(t) == before - 1, "the table shrank by one");
+    CHECK_MSG(freeSlots(t, s) >= 1, "a free slot always remains");
 
     r = ensureRoom(t, s, k16Mb);
     REQUIRE(r.ok);

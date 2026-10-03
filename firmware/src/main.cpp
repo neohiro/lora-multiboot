@@ -19,6 +19,8 @@
 #include <string>
 
 #include "bridge/Airtime.hpp"
+#include "bridge/Inventory.hpp"
+#include "bridge/RadioProfiles.hpp"
 #include "bridge/ChannelPlan.hpp"
 #include "bridge/ProtocolId.hpp"
 #include "bridge/Provisioning.hpp"
@@ -204,6 +206,53 @@ void reportRoles(const bridge::SlotTable& table) {
   Serial.println("");
 }
 
+void reportInventory(const bridge::SlotTable& table, const bridge::DeviceState& state) {
+  const bridge::SlotInventory inv = bridge::inventory(table, state, "Heltec LoRa 32 V4");
+
+  Serial.println();
+  Serial.println("Installed slots");
+  // One line per slot, in the format a connected host tool parses. Printed here so
+  // the same view a UI would show is visible over a serial cable.
+  const std::vector<std::string> lines = bridge::inventoryLines(inv);
+  for (const std::string& l : lines) Serial.println(l.c_str());
+  Serial.print("  ");
+  Serial.println(bridge::inventorySummary(inv).c_str());
+
+  if (!inv.recoveryPossible) {
+    Serial.println("  WARNING: every slot is filled. The board has no obvious");
+    Serial.println("  recovery target. Keep the reserved free slot empty.");
+  }
+}
+
+void reportMasterRx(const std::vector<bridge::TxProfile>& installed) {
+  Serial.println();
+  Serial.println("RX master");
+  const bridge::ReconcileReport r = bridge::reconcile(installed);
+  Serial.print("  ");
+  if (r.hasMaster) {
+    Serial.print(r.master.frequencyMHz, 3);
+    Serial.print(" MHz  BW ");
+    Serial.print(r.master.bandwidthKHz, 0);
+    Serial.print(" kHz  SF");
+    Serial.print(r.master.spreadingFactor);
+    Serial.print("  4/");
+    Serial.print(r.master.codingRateDenominator);
+    Serial.print("  preamble ");
+    Serial.print(r.master.preambleSymbols);
+  } else {
+    Serial.print("none -- ");
+    Serial.print(r.detail);
+  }
+  Serial.println("");
+  Serial.print("  profiles heard: ");
+  Serial.print(r.plan.profilesHeard);
+  Serial.print(" of ");
+  Serial.print(installed.size());
+  Serial.print("   (");
+  Serial.print(r.detail);
+  Serial.println(")");
+}
+
 void reportIdentifier() {
   Serial.println();
   Serial.println("Identifier");
@@ -274,7 +323,7 @@ void setup() {
   }
 
   Serial.println();
-  Serial.println("meshcore-meshtastic-heltec-v4");
+  Serial.println("lora-multiboot");
   Serial.print("region ");
   Serial.print(BRIDGE_REGION);
   Serial.println("  -- radio not yet brought up, nothing is transmitted");
@@ -309,6 +358,12 @@ void setup() {
   reportSlots(g_table, g_state);
   rule();
   reportRoles(g_table);
+  rule();
+  reportInventory(g_table, g_state);
+  rule();
+  // Every installed framework brings its own TX profile; the master RX settings are
+  // reconciled from all of them so the board can hear every mesh it claims to serve.
+  reportMasterRx(std::vector<bridge::TxProfile>());
   rule();
   reportIdentifier();
   rule();

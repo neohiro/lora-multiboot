@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "bridge/ProtocolId.hpp"

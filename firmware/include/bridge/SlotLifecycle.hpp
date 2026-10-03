@@ -35,6 +35,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -134,6 +135,29 @@ std::vector<SlotStatus> allSlots(const SlotTable& table, const DeviceState& stat
 // The slot the bootloader will enter next.
 std::uint8_t activeSlot(const DeviceState& state);
 
+// --- the reserved free slot -----------------------------------------------
+//
+// Every board reserves its final slot. One is enough: its whole job is to be the
+// thing you can write when everything else is wrong. A board whose last free slot
+// has been filled has no recovery path that does not involve a bench and physical
+// access to a node that is probably on a mast.
+
+// The name shown for it. Says what it is for rather than where it lives, because
+// this string is what somebody reads while holding a screwdriver.
+std::string freeSlotName(const char* hardware);
+
+constexpr std::uint8_t kReservedFreeSlots = 1;
+
+// True when this slot index may be provisioned at all. The highest slot in the
+// table never may, so `provision()` refuses it by name rather than by accident.
+bool slotIsProvisionable(const SlotTable& table, std::uint8_t index);
+
+// The provisionable range: the table's slots minus the reserved one.
+std::uint8_t provisionableSlots(const SlotTable& table);
+
+// How many free slots remain. A correctly-configured board reports at least 1.
+std::uint8_t freeSlots(const SlotTable& table, const DeviceState& state);
+
 // --- operations ------------------------------------------------------------
 
 // Write firmware into an empty slot. The next slot the operator should use.
@@ -158,8 +182,67 @@ SlotOpResult eraseSlot(const SlotTable& table, const DeviceState& state, std::ui
 //
 // Refuses unless the index is the highest slot the table declares. That refusal
 // is the design: compacting a gap would have to move every slot above it, which is
-// how a repartition destroys somebody's firmware.
+// precisely the operation that overwrites live firmware.
 SlotOpResult retireSlot(const SlotTable& table, const DeviceState& state, std::uint8_t index);
+
+// --- reclaiming the flash of a middle slot ---------------------------------
+//
+// This is the question that actually gets asked: "what happens if I uninstall
+// something from the middle?" The answer is that the flash is not lost, and the
+// fix is not compaction.
+//
+// # Why compaction is the wrong answer
+//
+// Removing a middle slot's rows from the partition table is itself completely safe --
+// the rows of every other slot stay at their existing offsets and sizes, and
+// nothing is moved or rewritten. That part is easy.
+//
+// What is *not* possible is putting a new numbered slot in the hole. Slot n's
+// address is arithmetic, `kFirstSlotOffset + n * stride`, precisely so that
+// growing the table can never relocate a partition holding live firmware. Fill a
+// middle hole with a numbered slot and that guarantee is gone: the next append
+// would compute an address from a count that no longer describes the layout, and
+// the first user to be caught by that writes firmware over somebody's mesh.
+//
+// So a reclaimed slot's space is not re-numbered. It is re-purposed.
+//
+// # What the space becomes
+//
+// An **OTA staging region**, declared as a `reserved` partition covering the hole.
+// That is precisely what a multi-slot bootloader needs and had nowhere to put: a
+// place to receive the *next* image for a slot before switching to it. Reclaiming
+// a slot you have finished with therefore pays for in-place updates of the slots
+// you kept -- without any of them moving, and without needing a USB cable on a
+// board that is on a mast.
+//
+// This is the same argument as reserving the free slot, pointed at a different
+// problem: space that cannot be re-numbered is still space, and the useful thing to
+// do with it is make the rest of the system need less of everything else.
+
+constexpr const char* kOtaStagingLabel = "ota_stage";
+
+struct ReclaimResult {
+  bool ok = false;
+  const char* detail = "";
+  std::uint8_t index = 0;
+
+  std::uint32_t freedOffset = 0;
+  std::uint32_t freedBytes = 0;
+  std::uint32_t totalFreeBytes = 0;
+
+  SlotTable table;  // rebuilt with the slot gone and the hole declared as staging
+};
+
+// Reclaim an erased slot's flash as OTA staging space.
+//
+// Refused when the slot still holds firmware (which would destroy it), and when
+// the slot is the reserved free one (which must stay empty and addressable).
+ReclaimResult reclaimSlot(const SlotTable& table, const DeviceState& state,
+                          std::uint8_t index);
+
+// The staging region, or nullptr when nothing has been reclaimed. Its offset and
+// size are what the flasher writes a new image into.
+const Partition* otaStagingRegion(const SlotTable& table);
 
 // Choose which slot the bootloader enters.
 SlotOpResult setBootSlot(const SlotTable& table, const DeviceState& state, std::uint8_t index);

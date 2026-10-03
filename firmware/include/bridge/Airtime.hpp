@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "bridge/ChannelPlan.hpp"
@@ -93,7 +94,24 @@ class AirtimeGovernor {
   // so an operator can choose.
   static constexpr std::uint32_t kDefaultWindowMs = 60u * 60u * 1000u;
 
-  static constexpr std::size_t kBuckets = 64;
+  // 32 buckets over a one-hour window is a 112 s bucket. Because airtime is spread
+  // rather than clumped, the worst-case over-count is about 1/32 of the budget --
+  // a few percent, in the safe direction. Halving this from 64 saves 256 bytes of
+  // RAM that every slot in the chain would otherwise be paying for.
+  static constexpr std::size_t kBuckets = 32;
+
+  // Bucket size for the default window. Precomputed as a constant so a
+  // default-constructed governor is fully valid -- which it must be, because the
+  // shared RAM block in SharedContext.hpp embeds one and has to be default
+  // constructible to stay a plain data structure.
+  static constexpr std::uint32_t kDefaultBucketMs =
+      (kDefaultWindowMs / static_cast<std::uint32_t>(kBuckets)) +
+      ((kDefaultWindowMs % static_cast<std::uint32_t>(kBuckets)) ? 1u : 0u);
+
+  // Defaults to the EU: the strictest cap in the table, and the region this
+  // project is built around. Defaulting to the *lenient* option would be the
+  // wrong direction to be wrong in.
+  AirtimeGovernor() = default;
 
   explicit AirtimeGovernor(Region region, std::uint32_t windowMs = kDefaultWindowMs);
 
@@ -141,8 +159,8 @@ class AirtimeGovernor {
 
   Region region_ = Region::EU_868;
   std::uint32_t windowMs_ = kDefaultWindowMs;
-  std::uint32_t bucketMs_ = 1;
-  std::uint8_t limitPercent_ = 10;
+  std::uint32_t bucketMs_ = kDefaultBucketMs;
+  std::uint8_t limitPercent_ = dutyCycleFor(Region::EU_868);
 
   std::uint64_t buckets_[kBuckets] = {};
   // Wall-clock time of the newest bucket's start, and whether anything is live.

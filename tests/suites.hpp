@@ -24,4 +24,7 @@ void suite_statistics();
 void suite_status_panel();
 void suite_roles();
 void suite_system_update();
+void suite_shared_context();
+void suite_reclaim();
+void suite_radio_profiles();
 void suite_partition_csv(const PartitionTableUnderTest* tables, int count);
