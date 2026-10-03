@@ -19,6 +19,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 PARTITION_DIR = ROOT / "firmware" / "partitions"
@@ -26,6 +27,20 @@ PARTITION_DIR = ROOT / "firmware" / "partitions"
 
 class FlashError(RuntimeError):
     pass
+
+
+class Write(NamedTuple):
+    """One thing to do to the flash.
+
+    ``path`` None means erase this region. Keeping both in one type lets the whole
+    plan print in one pass, which matters: the operator's last chance to notice the
+    wrong offset is that printout.
+    """
+
+    label: str
+    offset: int
+    size: int
+    path: Path | None = None
 
 
 @dataclass
@@ -232,13 +247,19 @@ def cmd_list(args) -> int:
             print(f"  0x{p.offset:06X}  {p.label:<15} {p.size:>8} B   {p.subtype}")
 
     print("\nslots (never touched by a system update):")
-    slot_parts = [p for p in parts if p.label.startswith("ota_")]
-    for i, p in enumerate(slot_parts):
-        fs_label = f"fs_{['meshcore', 'meshtastic', 'reticulum', 'lorawan', 'custom'][i]}"
-        fs = next((q for q in parts if q.label == fs_label), None)
-        line = f"  {p.label:<6} 0x{p.offset:06X}  app {p.size // 1024}K"
+    # The slot -> settings pairing is read out of the table rather than assumed. The
+    # firmware owns that mapping, and a hardcoded list here is precisely how a host
+    # tool drifts into disagreeing with the device about where a slot's settings live.
+    # A slot's filesystem is the fs_* row that begins exactly where its app ends.
+    for sp in [q for q in parts if q.label.startswith("ota_")]:
+        line = f"  {sp.label:<6} 0x{sp.offset:06X}  app {sp.size // 1024}K"
+        fs = next((q for q in parts
+                   if q.label.startswith("fs_")
+                   and q.offset == sp.offset + sp.size), None)
         if fs:
             line += f"   settings 0x{fs.offset:06X} ({fs.size // 1024}K, {fs.subtype})"
+        else:
+            line += "   settings: none declared"
         print(line)
 
     print(
@@ -265,7 +286,7 @@ def cmd_update_system(args) -> int:
         "partition_tbl": args.part_table_bin,
         "otadata": args.otadata,
     }
-    plan: list[tuple[int, Path, str]] = []
+    plan: list[Write] = []
     for label, path in wanted.items():
         if path is None:
             continue
@@ -279,7 +300,7 @@ def cmd_update_system(args) -> int:
             )
         if offset + size > region_end:
             raise FlashError(f"{label}: would extend past the system region")
-        plan.append((offset, path, label))
+        plan.append(Write(label, offset, size, path))
 
     # Note on the partition table: it is written whenever it is asked for. The
     # firmware-side planner skips an identical table when it knows the size matches,
@@ -292,8 +313,8 @@ def cmd_update_system(args) -> int:
         return 0
 
     print("\nsystem update plan:")
-    for offset, path, label in plan:
-        print(f"  0x{offset:06X}  {label:<15} {path}")
+    for w in plan:
+        print(f"  0x{w.offset:06X}  {w.label:<15} {w.path}")
     print("\nslots and every settings partition are left untouched.")
 
     if args.dry_run:
@@ -304,14 +325,36 @@ def cmd_update_system(args) -> int:
 
 
 def cmd_app(args) -> int:
-    """Write, reflash or erase exactly one slot."""
+    """Write, reflash or erase one slot."""
     csv_path = PARTITION_DIR / f"{args.table}.csv"
     parts = parse_csv(csv_path)
     label = f"ota_{args.slot}"
     target = next((p for p in parts if p.label == label), None)
     if target is None:
-        raise FlashError(f"{csv_path.name} has no {label}. It has: "
-                         + ", ".join(p.label for p in parts if p.label.startswith('ota_')))
+        available = ", ".join(p.label for p in parts if p.label.startswith("ota_"))
+        raise FlashError(f"{csv_path.name} has no {label}. It has: {available}")
+
+    if args.erase_settings:
+        # The destructive one. Deliberately a separate, explicit flag rather than a
+        # variant of --erase, because a bad image and "forget this node's identity
+        # on the mesh" are different requests and conflating them loses channel keys.
+        fs = next((p for p in parts if p.label.startswith("fs_")
+                   and p.offset == target.offset + target.size), None)
+        print(f"erasing {label} at 0x{target.offset:06X} ({target.size // 1024}K)")
+        if fs is None:
+            raise FlashError(
+                f"no settings partition found immediately after {label}; refusing to "
+                "guess which one you meant")
+        print(f"erasing {fs.label} at 0x{fs.offset:06X} ({fs.size // 1024}K) as well")
+        print("\nThis DESTROYS the slot's settings: channel keys, node database,")
+        print("and its identity on the mesh. It cannot be undone.")
+        if args.dry_run:
+            print("\ndry run: nothing written.")
+            return 0
+        return _run_esptool(args, [
+            Write(label, target.offset, target.size, None),
+            Write(fs.label, fs.offset, fs.size, None),
+        ])
 
     if args.erase:
         print(f"erasing {label} at 0x{target.offset:06X} ({target.size // 1024}K)")
@@ -321,10 +364,10 @@ def cmd_app(args) -> int:
         if args.dry_run:
             print("\ndry run: nothing written.")
             return 0
-        return _run_esptool(args, [(target.offset, None, label)])
+        return _run_esptool(args, [Write(label, target.offset, target.size, None)])
 
     if args.app is None:
-        raise FlashError("pass --app PATH (or --erase to clear the slot)")
+        raise FlashError("pass --app PATH, --erase, or --erase-settings")
 
     path = args.app
     size = path.stat().st_size
@@ -338,10 +381,10 @@ def cmd_app(args) -> int:
     if args.dry_run:
         print("\ndry run: nothing written.")
         return 0
-    return _run_esptool(args, [(target.offset, path, label)])
+    return _run_esptool(args, [Write(label, target.offset, target.size, path)])
 
 
-def _run_esptool(args, plan) -> int:
+def _run_esptool(args, plan: list[Write]) -> int:
     if shutil.which("esptool") is None and shutil.which("esptool.py") is None:
         print("error: esptool not found. Install it with: pip install esptool",
               file=sys.stderr)
@@ -352,25 +395,42 @@ def _run_esptool(args, plan) -> int:
     flash_size = chip_flash_size(port) if getattr(args, "flash_size", 16) == 0 else \
         args.flash_size * 1024 * 1024
 
-    cmd = [
+    base = [
         tool,
         "--chip", "esp32s3",
         "--port", port,
         "--baud", args.baud,
+    ]
+    write_opts = [
         "--flash_mode", "dio",
         "--flash_freq", "80m",
         "--flash_size", f"{flash_size // (1024 * 1024)}MB",
-        "write_flash",
     ]
-    for offset, path, label in plan:
-        if path is None:
-            # erase a region by writing an erase-only command
-            cmd += ["0x%X" % offset, "--erase"]
-            print(f"  erasing 0x{offset:06X} ({label})")
-        else:
-            cmd += ["0x%X" % offset, str(path)]
-    print("\nrunning esptool...")
-    return subprocess.run(cmd).returncode
+
+    rc = 0
+
+    # Erasures first, as their own subcommand.
+    #
+    # `write_flash` has no per-region --erase flag; the subcommand for this is
+    # `erase_region`, which takes a start AND a size. Passing "--erase" to
+    # write_flash would not erase anything -- it would be rejected as an unknown
+    # option, so `app N --erase` would simply fail.
+    for w in [x for x in plan if x.path is None]:
+        print(f"  erasing 0x{w.offset:06X} +0x{w.size:X} ({w.label})")
+        rc = subprocess.run(
+            base + ["erase_region", f"0x{w.offset:X}", f"0x{w.size:X}"]
+        ).returncode
+        if rc != 0:
+            return rc
+
+    writes = [x for x in plan if x.path is not None]
+    if writes:
+        cmd = base + write_opts + ["write_flash"]
+        for w in writes:
+            cmd += [f"0x{w.offset:X}", str(w.path)]
+        print("\nrunning esptool...")
+        rc = subprocess.run(cmd).returncode
+    return rc
 
 
 def main() -> int:
@@ -402,6 +462,9 @@ def main() -> int:
     p_app.add_argument("--app", type=Path, help="firmware image to write into the slot")
     p_app.add_argument("--erase", action="store_true",
                        help="erase the slot's firmware, keeping its settings")
+    p_app.add_argument("--erase-settings", action="store_true",
+                       help="erase the firmware AND its settings partition. "
+                            "Destructive and irreversible: loses channel keys.")
     p_app.set_defaults(func=cmd_app)
 
     # Legacy full-flash path, kept because it is still the right thing when
@@ -452,25 +515,28 @@ def cmd_full(args) -> int:
             raise FlashError(f"no partition labelled {label!r} in {csv_path.name}")
         args_map[label] = Path(path)
 
-    plan: list[tuple[int, Path, str]] = [
-        (by_label["bootloader"].offset, args.bootloader, "bootloader"),
-        (by_label["partition_tbl"].offset, args.part_table_bin, "partition_tbl"),
+    plan: list[Write] = [
+        Write("bootloader", by_label["bootloader"].offset,
+              by_label["bootloader"].size, args.bootloader),
+        Write("partition_tbl", by_label["partition_tbl"].offset,
+              by_label["partition_tbl"].size, args.part_table_bin),
     ]
     if args.otadata is not None:
-        plan.append((by_label["otadata"].offset, args.otadata, "otadata"))
+        plan.append(Write("otadata", by_label["otadata"].offset,
+                          by_label["otadata"].size, args.otadata))
     for label, path in sorted(args_map.items()):
         part = by_label[label]
         if part.size and path.stat().st_size > part.size:
             raise FlashError(f"{path.name} does not fit {label}")
-        plan.append((part.offset, path, label))
+        plan.append(Write(label, part.offset, part.size, path))
 
-    for _, path, _ in plan:
-        if not path.is_file():
-            raise FlashError(f"missing file: {path}")
+    for w in plan:
+        if w.path is not None and not w.path.is_file():
+            raise FlashError(f"missing file: {w.path}")
 
     print("\nwrite plan:")
-    for offset, path, label in plan:
-        print(f"  0x{offset:06X}  {label:<15} {path}")
+    for w in plan:
+        print(f"  0x{w.offset:06X}  {w.label:<15} {w.path}")
 
     if args.dry_run:
         print("\ndry run: nothing written.")

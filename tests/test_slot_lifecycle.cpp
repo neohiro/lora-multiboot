@@ -187,13 +187,19 @@ void suite_slot_lifecycle() {
   }
 
   {
-    // eraseSlot is the destructive one, and it says so.
-    const SlotTable t = tableWith(2);
+    // eraseSlot is the destructive one. The device records the *intent* -- the
+    // actual settings wipe is flash I/O the tool performs, because firmware cannot
+    // sanely erase the filesystem partition it is running out of.
+    const SlotTable t = tableWith(4);
     const DeviceState s = twoLive();
     const SlotOpResult r = eraseSlot(t, s, 1);
     REQUIRE(r.ok);
     CHECK_MSG(r.touchedOnly(1), "erasing slot 1 writes only slot 1");
-    CHECK(std::string(r.detail).find("settings erased") != std::string::npos);
+    CHECK_MSG(std::string(r.detail).find("settings wipe requested") != std::string::npos,
+              r.detail);
+    // And it is otherwise identical to eraseApp, which is the honest position.
+    CHECK_MSG(!r.state.isProvisioned(1), "the firmware is gone either way");
+    CHECK(r.state.isProvisioned(0));
   }
 
   // --- erasing the boot target must not leave the board bootless -----------

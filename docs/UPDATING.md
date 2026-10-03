@@ -101,9 +101,16 @@ The distinction is deliberate and is enforced in `SlotLifecycle`:
 |---|---|---|---|
 | `reflash` | that slot only | **no** | no |
 | `eraseApp` | that slot only | **no** | no |
-| `eraseSlot` | that slot only | **yes** | no |
+| `eraseSlot` | that slot only | **yes**, by the flasher | no |
 
 A bad firmware is not a reason to forget a node's channel keys. Conflating those
 two requests is how somebody reflashes to recover from a bad image and silently
 loses the node's identity on the mesh, so the destructive variant has to be asked
-for by name.
+for by name — and the device records the *intent*, while the flash erase itself is
+done by the tool, because firmware cannot sanely erase the filesystem partition it
+is running out of.
+
+```bash
+python tools/flash.py app 1 --erase          # clear firmware, keep settings
+python tools/flash.py app 1 --erase-settings # clear both. Irreversible.
+```

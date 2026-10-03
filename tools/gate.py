@@ -20,12 +20,18 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Totals observed by the last run, filled in by each half of the gate and then
+# checked against the figures the documentation quotes.
+COUNT_CPP = 0
+COUNT_PY = 0
 
 # Mirrors CXXFLAGS in the Makefile. -Werror is the point: a warning that would
 # once have been a note fails the build instead of quietly accumulating.
@@ -147,6 +153,11 @@ def compile_and_run(verbose: bool) -> int:
     )
     sys.stdout.write(run.stdout)
     sys.stderr.write(run.stderr)
+
+    global COUNT_CPP
+    m = re.search(r"(\d+) checks, (\d+) failed", run.stdout)
+    if m:
+        COUNT_CPP = int(m.group(1))
     return run.returncode
 
 
@@ -162,9 +173,53 @@ def run_python_tests(verbose: bool) -> int:
     tail = proc.stderr.strip().splitlines()
     for line in tail[-4:]:
         print(line)
+
+    global COUNT_PY
+    m = re.search(r"Ran (\d+) tests?", proc.stderr)
+    if m:
+        COUNT_PY = int(m.group(1))
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout + proc.stderr)
     return proc.returncode
+
+
+def check_documented_counts(cpp_checks: int, py_tests: int) -> int:
+    """The README and docs quote the gate's own totals. Keep them honest.
+
+    Stale numbers in a README are the kind of thing nobody notices until it is the
+    only thing wrong with the project. Both figures are quoted in prose, so rather
+    than hand-maintain them, check them: if a document claims a total, it has to be
+    the real one.
+
+    A document that quotes nothing is left alone -- this asserts accuracy, not the
+    presence of a boast.
+    """
+    pattern = re.compile(
+        r"([\d,]+)\s+assertions?\s+and\s+(\d+)\s+tool\s+tests", re.IGNORECASE)
+
+    problems: list[str] = []
+    for name in ("README.md", *sorted(str(p.relative_to(ROOT))
+                                      for p in (ROOT / "docs").glob("*.md"))):
+        path = ROOT / name
+        if not path.is_file():
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in pattern.finditer(line):
+                claimed_cpp = int(m.group(1).replace(",", ""))
+                claimed_py = int(m.group(2))
+                if claimed_cpp != cpp_checks or claimed_py != py_tests:
+                    problems.append(
+                        f"{name}:{lineno}: says {claimed_cpp} assertions / "
+                        f"{claimed_py} tool tests, actual is {cpp_checks} / {py_tests}")
+
+    if problems:
+        print("\n== documented totals are stale ==", file=sys.stderr)
+        for p in problems:
+            print(f"  {p}", file=sys.stderr)
+        print("\n  update the quoted totals, or the gate will keep failing here.",
+              file=sys.stderr)
+        return 1
+    return 0
 
 
 def main() -> int:
@@ -180,11 +235,16 @@ def main() -> int:
 
     py = run_python_tests(args.verbose)
 
-    print()
+    # Only meaningful when both halves passed; otherwise the numbers are not real.
+    counts_ok = 0
     if cpp == 0 and py == 0:
+        counts_ok = check_documented_counts(COUNT_CPP, COUNT_PY)
+
+    print()
+    if cpp == 0 and py == 0 and counts_ok == 0:
         print("GATE PASS")
         return 0
-    print(f"GATE FAIL (firmware logic={cpp}, flashing tool={py})")
+    print(f"GATE FAIL (firmware logic={cpp}, flashing tool={py}, docs={counts_ok})")
     return 1
 
 

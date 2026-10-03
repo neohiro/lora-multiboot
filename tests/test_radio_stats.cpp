@@ -152,6 +152,25 @@ void suite_statistics() {
     CHECK_EQ(s.forProtocol(Protocol::MeshCore).crcErrors, 0u);
     CHECK_EQ(s.forProtocol(Protocol::Unknown).crcErrors, 2u);
     CHECK_MSG(s.totalReceived() == 0u, "and it does not inflate either mesh");
+    // A corrupt frame is *our* traffic arriving damaged, which is an antenna or
+    // channel problem. It must not also read as "unidentified", which is the
+    // ordinary sight of a neighbour's LoRa and is not a fault at all. Conflating
+    // the two hides the first behind the second.
+    CHECK_MSG(s.forProtocol(Protocol::Unknown).unidentified == 0u,
+              "a CRC error is not counted as an unidentified frame");
+  }
+
+  {
+    // And the two metrics do move independently, which is the point.
+    Statistics s;
+    s.onFrame(Protocol::MeshCore, true, -90, 20, 1000);  // ours, good
+    s.onFrame(Protocol::Unknown, true, -110, -5, 1100);  // a neighbour's, good
+    s.onFrame(Protocol::MeshCore, false, -120, -10, 1200);  // ours, damaged
+
+    CHECK_EQ(s.forProtocol(Protocol::MeshCore).received, 1u);
+    CHECK_EQ(s.forProtocol(Protocol::Unknown).unidentified, 1u);
+    CHECK_EQ(s.forProtocol(Protocol::Unknown).crcErrors, 1u);
+    CHECK_EQ(s.totalReceived(), 1u);
   }
 
   {

@@ -197,5 +197,102 @@ class SystemLayer(unittest.TestCase):
             flash.system_pieces(Path(f.name))
 
 
+class EsptoolInvocation(unittest.TestCase):
+    """The command actually built.
+
+    `write_flash` has no per-region `--erase` flag; the subcommand is
+    `erase_region`, which takes a start *and* a size. Getting that wrong produces a
+    command esptool rejects, so `app N --erase` fails at the one moment somebody is
+    trying to recover a node. Worth pinning.
+    """
+
+    def _capture(self, plan):
+        import types
+
+        calls = []
+
+        class Result:
+            returncode = 0
+
+        real_run = flash.subprocess.run
+        real_which = flash.shutil.which
+        real_port = flash.find_port
+        real_size = flash.chip_flash_size
+        try:
+            flash.shutil.which = lambda name, *a, **k: (
+                "C:/fake/esptool" if name == "esptool" else real_which(name, *a, **k))
+            flash.find_port = lambda explicit=None: "COM7"
+            flash.chip_flash_size = lambda port: 16 * 1024 * 1024
+
+            def fake_run(cmd, *a, **k):
+                calls.append(list(cmd))
+                return Result()
+
+            flash.subprocess.run = fake_run
+            args = types.SimpleNamespace(port="COM7", baud="460800", flash_size=16)
+            rc = flash._run_esptool(args, plan)
+            return rc, calls
+        finally:
+            flash.subprocess.run = real_run
+            flash.shutil.which = real_which
+            flash.find_port = real_port
+            flash.chip_flash_size = real_size
+
+    def test_erase_uses_erase_region_not_write_flash(self):
+        rc, calls = self._capture(
+            [flash.Write("ota_1", 0x330000, 0x200000, None)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(calls), 1)
+        cmd = calls[0]
+        self.assertIn("erase_region", cmd)
+        self.assertNotIn("write_flash", cmd)
+        self.assertIn("0x330000", cmd)
+        # erase_region needs a size, not just an address.
+        self.assertIn("0x200000", cmd)
+
+    def test_write_uses_write_flash(self):
+        import tempfile
+        from pathlib import Path as P
+
+        f = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+        f.write(b"\x00" * 1024)
+        f.close()
+        self.addCleanup(lambda: P(f.name).unlink(missing_ok=True))
+
+        rc, calls = self._capture(
+            [flash.Write("ota_0", 0x30000, 0x200000, P(f.name))])
+        self.assertEqual(rc, 0)
+        self.assertIn("write_flash", calls[0])
+        self.assertIn("0x30000", calls[0])
+
+    def test_erase_happens_before_write(self):
+        import tempfile
+        from pathlib import Path as P
+
+        f = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+        f.write(b"\x00" * 1024)
+        f.close()
+        self.addCleanup(lambda: P(f.name).unlink(missing_ok=True))
+
+        rc, calls = self._capture([
+            flash.Write("ota_1", 0x330000, 0x200000, P(f.name)),
+            flash.Write("ota_0", 0x30000, 0x200000, None),
+        ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(calls), 2)
+        # A region must be erased before anything is written into the chip, or the
+        # new image lands on top of the old one and the erase silently did nothing.
+        self.assertIn("erase_region", calls[0])
+        self.assertIn("write_flash", calls[1])
+
+    def test_write_record_carries_the_size(self):
+        # The size is what makes erase_region possible, so a plan that omits it is
+        # the bug this whole class exists to prevent.
+        w = flash.Write("ota_0", 0x30000, 0x200000)
+        self.assertEqual(w.size, 0x200000)
+        self.assertEqual(w.offset, 0x30000)
+        self.assertIsNone(w.path)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

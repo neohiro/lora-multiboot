@@ -32,10 +32,13 @@ std::uint32_t Statistics::saturate(std::uint32_t v) {
 void Statistics::onFrame(Protocol protocol, bool crcOk, std::int16_t rssi, std::int8_t snr,
                          std::uint32_t nowMs) {
   if (!crcOk) {
-    // Counted against Unknown rather than against a protocol: a corrupt frame has
-    // no trustworthy identity, and attributing it to a mesh would inflate that
-    // mesh's numbers with somebody else's noise.
-    onUnidentified();
+    // Counted as a CRC error only, and deliberately NOT also as "unidentified".
+    //
+    // Those are two different things an operator acts on differently. A rising
+    // crcErrors is an antenna or channel problem: our own frames are arriving
+    // damaged. A rising unidentified means somebody else's LoRa, which is normal on
+    // a shared band and not a fault. Counting a corrupt frame as both hides the
+    // first behind the second, so the diagnostic gets lost in the noise.
     ++stats_[0].crcErrors;
     return;
   }

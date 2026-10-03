@@ -45,21 +45,13 @@ SlotInventory inventory(const SlotTable& table, const DeviceState& state,
     s.bootsByDefault = inv.activeSlot == i;
 
     // Which application a slot holds is device state, not geometry: the partition
-    // table knows the sizes and the offsets, and nothing about what is installed.
-    // Until a slot reports its own identity, the framework is simply unknown -- and
-    // saying "unknown" is far better than guessing, which is the same principle the
-    // identifier follows on the air.
-    RoleProfile role;
-    if (free) {
-      s.framework = Framework::Custom;
-      s.role = Role::Config;
-      s.purposeKnown = false;
-    } else {
-      s.framework = Framework::Custom;
-      s.role = Role::Config;
-      s.purposeKnown = false;
-    }
-    (void)role;
+    // table knows the sizes and the offsets, and nothing whatsoever about what is
+    // installed. Until a slot reports its own identity there is nothing to go on,
+    // so the purpose reads unknown rather than being guessed -- the same principle
+    // the air identifier follows, for the same reason.
+    s.framework = Framework::Custom;
+    s.role = Role::Config;
+    s.purposeKnown = false;
 
     inv.slots.push_back(s);
   }

@@ -26,8 +26,10 @@ namespace bridge {
 struct ProtocolStats {
   std::uint32_t received = 0;      // frames delivered, CRC-valid
   std::uint32_t transmitted = 0;   // frames sent
-  std::uint32_t crcErrors = 0;     // heard but corrupt: exactly the shared-band noise
-  std::uint32_t unidentified = 0;  // heard but unattributable, normally somebody else's LoRa
+  std::uint32_t crcErrors = 0;     // heard but corrupt: our traffic, damaged. An
+                                   // antenna or channel problem, not neighbours.
+  std::uint32_t unidentified = 0;  // heard cleanly but unattributable: almost always
+                                   // somebody else's LoRa, which is normal here
   std::uint32_t suppressed = 0;    // not repeated, by policy: duplicate, hop limit, seen before
 
   std::int16_t lastRssi = 0;       // dBm

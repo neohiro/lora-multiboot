@@ -191,14 +191,18 @@ Both are **generated** from `Provisioning.hpp` by `tools/gen_layouts.py`. CI
 regenerates them and fails if anything changed, so the table a board gets and the
 code that validates it cannot drift apart.
 
-| File | Slots |
-|---|---|
-| `firmware/partitions/quadboot.csv` | 5 — MeshCore, Meshtastic, three reserved |
-| `firmware/partitions/dualboot.csv` | 2 — nothing held back |
+| File | Slots | Usable |
+|---|---|---|
+| `firmware/partitions/quadboot.csv` | 5 — MeshCore, Meshtastic, three reserved | 4 |
+| `firmware/partitions/dualboot.csv` | 3 — nothing held back | 2 |
 
-```
-# Validate with: python tools/gate.py
-```
+Each carries one more slot than it has usable, because the **final slot is
+permanently reserved** and cannot be provisioned. `dualboot.csv` is three rather
+than two precisely so it still delivers the two firmwares its name promises.
+
+[SLOTS.md](SLOTS.md) covers the reserve, and reclaiming the flash of a middle slot
+as OTA staging space — which is what happens to it when you uninstall something from
+the middle.
 
 ## Adding a framework
 

@@ -31,7 +31,7 @@ differ by one byte in the preamble. Everything else follows from that.
 | Frame decode → cross-protocol relay | **Not written** |
 | OLED / BLE rendering of the panel | **Not written** (rendering is tested; no driver yet) |
 
-1,075 assertions and 20 tool tests pass, compiled under `-Werror` with
+1,241 assertions and 24 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`. The current firmware boots, validates
 its own plan and layout, and reports every one of these on the serial log — and
 **transmits nothing**. `firmware/src/main.cpp` says so rather than pretending
@@ -66,8 +66,16 @@ firmware/
     ChannelPlan.hpp     region -> shared RF plan, or a loud complaint
     SlotTable.hpp       partition geometry + framework isolation
     Provisioning.hpp    zero-boot state machine, append-only growth
-    SlotLifecycle.hpp   provision, reflash, erase, retire, boot selection
-  src/                those five .cpp files
+    SlotLifecycle.hpp   provision, reflash, erase, retire, reclaim, boot selection
+    Airtime.hpp         LoRa airtime math + duty-cycle governor
+    RadioPlan.hpp       promiscuous-capture config + regional power ceilings
+    RadioProfiles.hpp   per-framework TX settings, master RX reconciliation
+    Roles.hpp           slot purposes + combination validity audit
+    Inventory.hpp       slots as live apps, host-parseable
+    StatusPanel.hpp     3-line OLED/CLI rendering
+    SystemUpdate.hpp    bootloader/table updates that preserve every slot
+    SharedContext.hpp   the one shared RAM block, size-asserted
+  src/                those .cpp files
   src/main.cpp        on-device bring-up (Arduino; not in the host gate)
   partitions/         quadboot.csv, dualboot.csv  (generated)
 tests/                the gate: C++ suites + the flashing tool's own tests

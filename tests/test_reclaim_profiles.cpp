@@ -177,6 +177,26 @@ void suite_reclaim() {
     CHECK_MSG(grown.partitions().empty(), "and nothing invalid is returned");
   }
 
+  // --- retiring the table is refused while staging space is held ------------
+  //
+  // growTable() already refuses in this situation, because it rebuilds geometry from
+  // a slot count and cannot carry a staging region with it. retireSlot() rebuilding
+  // the same way must refuse too -- otherwise it quietly throws away an OTA area
+  // somebody is relying on, which is the opposite of what they asked it to do.
+  {
+    const SlotTable t = board(5);
+    const DeviceState s = withFirmware(1);
+    const ReclaimResult reclaimed = reclaimSlot(t, s, 3);
+    REQUIRE(reclaimed.ok);
+    REQUIRE(otaStagingRegion(reclaimed.table) != nullptr);
+
+    const SlotOpResult retired = retireSlot(reclaimed.table, s, 4);
+    CHECK_MSG(!retired.ok, "a table rebuild must not silently drop staging space");
+    CHECK_MSG(std::string(retired.detail).find("staging") != std::string::npos,
+              retired.detail);
+    CHECK_MSG(retired.touchedOnly(0xFF), "and writes nothing when it refuses");
+  }
+
   // --- the free-slot guarantee survives a reclaim --------------------------
 
   {

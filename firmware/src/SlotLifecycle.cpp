@@ -235,13 +235,28 @@ SlotOpResult eraseApp(const SlotTable& table, const DeviceState& state, std::uin
 SlotOpResult eraseSlot(const SlotTable& table, const DeviceState& state, std::uint8_t index) {
   SlotOpResult r = eraseApp(table, state, index);
   if (!r.ok) return r;
-  // The filesystem goes too. Deliberately opt-in, because it is unrecoverable and
-  // almost never what someone means by "the firmware is broken".
-  r.detail = "app and settings erased";
+  // The settings wipe is performed by the flasher (`flash.py app N
+  // --erase-settings`), not by the device: erasing a filesystem partition is flash
+  // I/O, and firmware cannot sanely do it to the partition it is running out of. So
+  // the device state after this call is the same as eraseApp -- what differs is the
+  // operator's stated intent, which is recorded here so a UI can show that the
+  // identity is going as well as the image.
+  r.detail = "app erased; settings wipe requested";
   return r;
 }
 
 SlotOpResult retireSlot(const SlotTable& table, const DeviceState& state, std::uint8_t index) {
+  // Checked before anything else, because it applies regardless of which slot is
+  // named and is the more actionable of the two answers. Consistent with
+  // growTable(), which refuses for the same reason: the geometry is rebuilt from a
+  // slot count and cannot carry a staging region with it, so retiring here would
+  // silently destroy an OTA area somebody is relying on.
+  if (otaStagingRegion(table) != nullptr) {
+    return failure(table, state,
+                   "an OTA staging region is in use; reclaim it explicitly rather than "
+                   "losing it to a table rebuild");
+  }
+
   const Partition* app = table.find(appLabel(index));
   if (app == nullptr) {
     return failure(table, state, "no such slot to retire");
