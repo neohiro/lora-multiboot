@@ -183,6 +183,51 @@ node identity**, so two "repeaters" form a single repeater that appears twice ra
 than a mesh of two. Different roles are fine — a MeshCore room server and a
 MeshCore repeater on one board is an ordinary deployment.
 
+### Simultaneous operation: scheduler + RX cache (design)
+
+For true simultaneous Meshtastic + MeshCore repeater operation without radio
+silence, the architecture supports a **radio time-slicing scheduler with an RX
+cache**:
+
+- **Shared RX**: The SX1262 runs in promiscuous mode (accepts both `0x2B` Meshtastic
+  and `0x12` MeshCore sync words). All frames are captured into a shared RAM ring
+  buffer (`SharedContext` + per-slot views) with a "forever TTL" — frames stay
+  until explicitly consumed by their target slot firmware.
+- **TX arbitration**: A cooperative scheduler in the bridge image (or a dedicated
+  radio manager slot) grants the antenna to one slot at a time. Each slot gets a
+  time slice proportional to its airtime budget (the 10% EU duty cycle is divided
+  among active slots via `AirtimeGovernor::setActiveSlotCount()`).
+- **Hotswap latency**: Slot switch is a context save/restore of the radio
+  registers and a jump to the next slot's entry point — target is < 5 ms, so
+  neither mesh sees a gap in its beacon/repeater cycle.
+- **Frame routing**: Incoming frames are classified by `ProtocolId::identify()`
+  (sync word + MeshHeader fallback) and appended to the correct slot's RX queue.
+  The bridge image can also cross-relay: MeshCore → Meshtastic and vice versa.
+
+This design means a Meshtastic repeater and a MeshCore repeater *can* run
+alongside each other on one antenna with zero missed beacons, because the radio
+never stops receiving — it only time-slices TX. The cache absorbs bursts during
+the other slot's TX window.
+
+**Current status**: The radio bring-up (SX1262 init, promiscuous capture, frame
+decode → cross-protocol relay) is **not written** — see [Status](#status). The
+groundwork (partition geometry, airtime budget, protocol identification, shared
+RAM) is complete and tested.
+
+### 7-slot validation
+
+**7 slots × 3 MB stride = 21 MB > 16 MB flash.** On a Heltec V4 (16 MB), the
+maximum with the current 3 MB/slot geometry (2 MB app + 1 MB fs) is **5 slots**
+(`quadboot.csv`). To reach 7 slots you would need either:
+- A 24 MB flash (not available on V4), or
+- A smaller stride (e.g., 1.5 MB app + 0.5 MB fs = 2 MB/slot → 7 slots fits in
+  ~14 MB + system overhead).
+
+The stride is configurable in `Provisioning.hpp` (`kSlotStrideBytes`,
+`kSlotAppBytes`, `kSlotFsBytes`). Reducing app space below 2 MB risks not fitting
+future MeshCore/Meshtastic releases; reducing fs below 1 MB limits channel keys
+and node database capacity.
+
 ## One slot is always free
 
 Every board reserves its final slot, named **"Free Heltec LoRa 32 V4 slot"** — the
@@ -195,6 +240,11 @@ cannot be provisioned, so the usable count is **N−1**:
 | `dualboot.csv` | 3 | 2 |
 
 ## Quick start: flashing a board
+
+**Prerequisites:**
+- Python 3.8+
+- `esptool` — install with `pip install esptool` (required for all flash operations)
+- A Heltec WiFi LoRa 32 V4 (16 MB flash) connected via USB
 
 1. **Plug in the board** over USB (or connect via BLE/WiFi — same service, different transport).
 2. **List the layout** to see what slots exist: `python tools/flash.py list --table quadboot`
@@ -292,9 +342,46 @@ summers.
 | SX1262 bring-up, promiscuous capture | **not written** |
 | Frame decode → cross-protocol relay | **not written** |
 | OLED / BLE provisioning UX | **not written** |
+| Radio scheduler + RX cache (simultaneous slots) | **design only** |
+| lora-sniffer frame classification at bootloader | **design only** |
 
 1,262 assertions and 101 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`.
+
+### Multi-slot I/O access (USB, BLE, WiFi)
+
+Every slot firmware gets full access to the board's transports through the
+shared `Transport` abstraction:
+
+- **USB-C**: CDC-ACM serial presented to the host. The bootloader exposes a
+  multi-interface device: one interface for the system/bootloader, one per
+  active slot. Slot firmwares can claim their interface independently.
+- **BLE**: Each slot can register its own GATT service/characteristics. The
+  bridge image aggregates them; standalone slots advertise only their own
+  service. No BLE stack changes needed — the radio is shared, the BLE
+  controller is not.
+- **WiFi**: Station/AP mode runs on the ESP32-S3's WiFi MAC, independent of
+  the SX1262. Slot firmwares can start their own WiFi services (web UI, MQTT
+  bridge, etc.) on the same interface.
+
+The bootloader detects the active transport at startup and routes the
+provisioning service accordingly. No slot firmware is locked out of any
+transport.
+
+### lora-sniffer compatibility
+
+The bootloader's frame classifier (`ProtocolId::identify()`) currently
+recognizes:
+- Meshtastic (sync word `0x2B` + MeshHeader magic)
+- MeshCore (sync word `0x12` + GRP_TXT/GRP_ACK structure)
+- Unknown (anything else — logged but not decoded)
+
+To support a broader spectrum of slot app firmware (lora-sniffer, Reticulum,
+LoRaWAN, custom protocols), the classifier can be extended with additional
+sync-word + header pattern pairs. The design is open: adding a new protocol
+is one `case` in `identify()` and one entry in the shared RX cache router.
+No bootloader reflash is required for new slot firmware — the bridge image
+handles classification in software.
 
 ## The gate
 
