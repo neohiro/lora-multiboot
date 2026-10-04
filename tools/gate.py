@@ -177,6 +177,14 @@ PY_TEST_FILES = [
     "tests/test_rf_drift.py",
 ]
 
+# Scripts that must exit zero, run as-is.
+PY_CHECKS = [
+    # Rehearses the drift -> record -> version path against a doctored upstream,
+    # so the workflow's version branch has been executed by something. A branch
+    # that has never run is a branch that is wrong.
+    "tools/rehearse_drift.py",
+]
+
 
 def run_python_tests(verbose: bool) -> int:
     """Every Python test file, each as its own process.
@@ -198,6 +206,17 @@ def run_python_tests(verbose: bool) -> int:
             sys.stderr.write(proc.stdout + proc.stderr)
             worst = proc.returncode or 1
     print(f"python tests: {total} total")
+
+    for rel in PY_CHECKS:
+        proc = subprocess.run(
+            [sys.executable, rel], cwd=ROOT, capture_output=True, text=True)
+        if proc.returncode != 0:
+            sys.stdout.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+            worst = proc.returncode or 1
+            print(f"  {rel}: FAILED", flush=True)
+        else:
+            print(f"  {rel}: ok", flush=True)
 
     global COUNT_PY
     COUNT_PY = total

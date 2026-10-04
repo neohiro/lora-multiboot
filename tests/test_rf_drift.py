@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -132,15 +133,44 @@ class Expectations(unittest.TestCase):
         self.data = json.loads(
             (ROOT / "firmware" / "rf_defaults.json").read_text(encoding="utf-8"))
 
-    def test_regions_match_firmware_codes(self):
+    def test_meshtastic_regions_match_firmware_codes(self):
         # If these disagree the offline check compares nothing and reports success.
+        # The meshtastic keys are RDEF region codes, which is what ChannelPlan.cpp
+        # is keyed by, so they must match it exactly.
         rows = rf.parse_firmware_table(
             (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8"))
-        for section in ("meshtastic", "meshcore"):
-            for region in self.data.get(section, {}):
-                with self.subTest(section=section, region=region):
-                    self.assertIn(region, rows,
-                                  f"{section}.{region} is not a region in ChannelPlan.cpp")
+        for region in self.data.get("meshtastic", {}):
+            if region.startswith("_"):
+                continue
+            with self.subTest(region=region):
+                self.assertIn(region, rows,
+                              f"meshtastic.{region} is not a region in ChannelPlan.cpp")
+
+    def test_meshcore_keys_are_faq_prose_not_region_codes(self):
+        # The opposite rule, on purpose. MeshCore states its presets in prose, so
+        # the key is the sentence's own region text. Requiring it to be a region
+        # code would be requiring the parser to invent a mapping the FAQ does not
+        # provide -- which is how a fabricated EU_868 entry got recorded in the
+        # first place.
+        rows = rf.parse_firmware_table(
+            (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8"))
+        keys = [k for k in self.data.get("meshcore", {}) if not k.startswith("_")]
+        self.assertTrue(keys, "no meshcore presets recorded at all")
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertNotIn(key, rows,
+                                 "a meshcore key must be the FAQ's own wording, not "
+                                 "a region code copied from the firmware table")
+
+    def test_meshcore_presets_carry_a_frequency_and_are_verified(self):
+        for key, entry in self.data.get("meshcore", {}).items():
+            if key.startswith("_") or not isinstance(entry, dict):
+                continue
+            with self.subTest(key=key):
+                self.assertIn("frequency_mhz", entry)
+                self.assertTrue(entry.get("verified"),
+                                f"meshcore.{key} is recorded unverified; the monitor "
+                                f"must report unconfirmed rather than treat it as fact")
 
     def test_eu_still_carries_the_shared_carrier(self):
         # The premise. If this ever changes, the architecture is dead and the
@@ -182,6 +212,157 @@ class DiffSemantics(unittest.TestCase):
             {"EU_868": {"band_start_mhz": 869.400001}},
             ["band_start_mhz"], "test")
         self.assertEqual(changes, [])
+
+
+class MeshCorePresetParsing(unittest.TestCase):
+    """The FAQ is prose, so these are the cases prose actually produces."""
+
+    FAQ_SENTENCE = ("Recently, as of October 2025, many regions have moved to the "
+                    "narrow setting, aka using BW62.5 and a lower SF number (instead "
+                    "of the original SF11). For example, USA/Canada (Recommended) "
+                    "preset is 910.525MHz, SF7, BW62.5, CR5.")
+
+    def test_the_real_sentence_yields_the_region_not_the_sentence(self):
+        # This exact sentence is upstream today. The failure it caused: the region
+        # capture started at the first capital letter in the sentence, so the key
+        # was "For example, USA/Canada (Recommended)" -- a sentence, not a region.
+        out = rf.parse_meshcore_presets(self.FAQ_SENTENCE)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["region_text"], "USA/Canada (Recommended)")
+        self.assertAlmostEqual(out[0]["frequency_mhz"], 910.525)
+        self.assertEqual(out[0]["spreading_factor"], 7)
+        self.assertAlmostEqual(out[0]["bandwidth_khz"], 62.5)
+        self.assertEqual(out[0]["coding_rate_denominator"], 5)
+
+    def test_a_region_capture_never_spans_two_sentences(self):
+        text = ("EU (Recommended) preset is 869.525MHz, SF11, BW250, CR5. "
+                "For example, USA/Canada (Recommended) preset is 910.525MHz, "
+                "SF7, BW62.5, CR5.")
+        keys = [p["region_text"] for p in rf.parse_meshcore_presets(text)]
+        self.assertEqual(keys, ["EU (Recommended)", "USA/Canada (Recommended)"])
+
+    def test_reworded_prose_without_a_preset_is_undeterminable(self):
+        # Not an empty list, and not silence: the parser failing must be loud,
+        # because a silent parser reports "no drift" forever.
+        with self.assertRaises(rf.Undeterminable):
+            rf.parse_meshcore_presets("The FAQ no longer documents presets at all.")
+
+
+class MeshCoreDiff(unittest.TestCase):
+    KEY = "USA/Canada (Recommended)"
+
+    def _preset(self, **kw):
+        base = {"region_text": self.KEY, "frequency_mhz": 910.525,
+                "spreading_factor": 7, "bandwidth_khz": 62.5,
+                "coding_rate_denominator": 5, "verified": True}
+        base.update(kw)
+        return base
+
+    def test_changed_frequency_is_drift(self):
+        changes, _ = rf.diff_meshcore(
+            {self.KEY: {"frequency_mhz": 910.525}},
+            [self._preset(frequency_mhz=915.0)])
+        self.assertEqual(len(changes), 1)
+        self.assertIn("CHANGED", changes[0])
+        self.assertIn("915.0", changes[0])
+
+    def test_changed_spreading_factor_is_drift(self):
+        # The narrow-band migration is exactly this: SF drops, carrier stays.
+        changes, _ = rf.diff_meshcore(
+            {self.KEY: {"spreading_factor": 11}},
+            [self._preset(spreading_factor=7)])
+        self.assertEqual(len(changes), 1)
+        self.assertIn("spreading_factor", changes[0])
+
+    def test_untracked_preset_is_newly_seen_not_drift(self):
+        changes, new = rf.diff_meshcore({}, [self._preset()])
+        self.assertEqual(changes, [])
+        self.assertEqual(len(new), 1)
+
+    def test_comment_key_is_not_a_removed_preset(self):
+        # rf_defaults.json explains itself in "_comment" keys. Treating one as a
+        # preset upstream deleted would manufacture drift out of a note to a human.
+        changes, _ = rf.diff_meshcore({"_comment": ["a note"]}, [self._preset()])
+        self.assertEqual(changes, [])
+
+    def test_comment_key_is_not_a_removed_region(self):
+        changes, new = rf.diff_upstream(
+            {"_comment": ["a note"], "EU_868": {"band_start_mhz": 869.4}},
+            {"EU_868": {"band_start_mhz": 869.4}},
+            ["band_start_mhz"], "test")
+        self.assertEqual(changes, [])
+        self.assertEqual(new, [])
+
+    def test_removed_tracked_preset_is_drift(self):
+        changes, _ = rf.diff_meshcore({self.KEY: {"frequency_mhz": 910.525}}, [])
+        self.assertEqual(len(changes), 1)
+        self.assertIn("REMOVED", changes[0])
+
+
+class WritePath(unittest.TestCase):
+    """--write must record what it read, and nothing it did not."""
+
+    def test_records_meshcore_as_well_as_meshtastic(self):
+        # --write only ever rewrote the meshtastic section, so MeshCore drift was
+        # reported every week and never adopted.
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            exp = root / "rf_defaults.json"
+            exp.write_text(json.dumps({
+                "sources": {},
+                "meshtastic": {},
+                "meshcore": {},
+            }), encoding="utf-8")
+            saved = rf.EXPECTATIONS
+            rf.EXPECTATIONS = exp
+            try:
+                key = "USA/Canada (Recommended)"
+                rf.record_observations(
+                    {"EU_868": {"band_start_mhz": 869.4, "verified": True}},
+                    [{"region_text": key, "frequency_mhz": 910.525,
+                      "spreading_factor": 7, "bandwidth_khz": 62.5,
+                      "coding_rate_denominator": 5, "verified": True}],
+                    undeterminable=[])
+            finally:
+                rf.EXPECTATIONS = saved
+            data = json.loads(exp.read_text(encoding="utf-8"))
+            self.assertEqual(data["meshtastic"]["EU_868"]["band_start_mhz"], 869.4)
+            self.assertEqual(data["meshcore"][key]["frequency_mhz"], 910.525)
+            self.assertEqual(data["meshcore"][key]["spreading_factor"], 7)
+
+    def test_refuses_to_write_when_a_source_was_undeterminable(self):
+        with tempfile.TemporaryDirectory() as td:
+            exp = pathlib.Path(td) / "rf_defaults.json"
+            original = {"sources": {}, "meshtastic": {"EU_868": {"band_start_mhz": 869.4}},
+                        "meshcore": {}}
+            exp.write_text(json.dumps(original), encoding="utf-8")
+            saved = rf.EXPECTATIONS
+            rf.EXPECTATIONS = exp
+            try:
+                wrote = rf.record_observations(
+                    {"EU_868": {"band_start_mhz": 868.0}},
+                    [], undeterminable=["meshcore: fetch failed"])
+            finally:
+                rf.EXPECTATIONS = saved
+            self.assertFalse(wrote)
+            # and the file is untouched, not half-updated
+            self.assertEqual(json.loads(exp.read_text(encoding="utf-8")), original)
+
+    def test_refuses_to_write_when_nothing_was_observed(self):
+        # An empty observation is not permission to blank the recorded values.
+        with tempfile.TemporaryDirectory() as td:
+            exp = pathlib.Path(td) / "rf_defaults.json"
+            original = {"sources": {}, "meshtastic": {"EU_868": {"band_start_mhz": 869.4}},
+                        "meshcore": {}}
+            exp.write_text(json.dumps(original), encoding="utf-8")
+            saved = rf.EXPECTATIONS
+            rf.EXPECTATIONS = exp
+            try:
+                wrote = rf.record_observations({}, [], undeterminable=[])
+            finally:
+                rf.EXPECTATIONS = saved
+            self.assertFalse(wrote)
+            self.assertEqual(json.loads(exp.read_text(encoding="utf-8")), original)
 
 
 class OfflineMode(unittest.TestCase):

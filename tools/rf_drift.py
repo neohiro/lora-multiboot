@@ -136,8 +136,14 @@ def parse_meshtastic_regions(text: str) -> dict[str, dict]:
 # --- MeshCore ----------------------------------------------------------------
 
 # "USA/Canada (Recommended) preset is 910.525MHz, SF7, BW62.5, CR5."
+#
+# The region class excludes commas, which is what stops the capture from starting
+# at the beginning of the sentence: given "For example, USA/Canada (Recommended)
+# preset is ..." the leftmost possible match would otherwise swallow "For example,"
+# and the key would be a sentence rather than a region. Commas separate the region
+# from everything else in the prose, and a region name does not contain one.
 _MESHCORE_PRESET = re.compile(
-    r"([A-Za-z][A-Za-z0-9 /&()\-,]*?)\s+preset\s+is\s+"
+    r"([A-Za-z][A-Za-z0-9 /&()\-]*?)\s+preset\s+is\s+"
     r"([0-9]+(?:\.[0-9]+)?)\s*MHz\s*,\s*"
     r"SF\s*([0-9]+)\s*,\s*"
     r"BW\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*"
@@ -145,20 +151,32 @@ _MESHCORE_PRESET = re.compile(
     re.IGNORECASE,
 )
 
+# Sentence boundaries. Applied before matching so a region capture can never span
+# two sentences: the FAQ is documentation prose, and prose runs sentences together
+# with a single space.
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
 
 def parse_meshcore_presets(text: str) -> list[dict]:
-    """Extract recommended presets. Order-preserving; region labels are free text."""
+    """Extract recommended presets. Order-preserving; region labels are free text.
+
+    Matched sentence by sentence rather than across the whole document: prose
+    concatenates sentences with a single space, so a whole-document match can
+    happily capture the end of one sentence and the start of the next as one
+    region name.
+    """
     out = []
-    for m in _MESHCORE_PRESET.finditer(text):
-        region, freq, sf, bw, cr = m.groups()
-        out.append({
-            "region_text": region.strip(" .,-"),
-            "frequency_mhz": float(freq),
-            "spreading_factor": int(sf),
-            "bandwidth_khz": float(bw),
-            "coding_rate_denominator": int(cr),
-            "verified": True,
-        })
+    for sentence in _SENTENCE.split(text):
+        for m in _MESHCORE_PRESET.finditer(sentence):
+            region, freq, sf, bw, cr = m.groups()
+            out.append({
+                "region_text": region.strip(" .,-"),
+                "frequency_mhz": float(freq),
+                "spreading_factor": int(sf),
+                "bandwidth_khz": float(bw),
+                "coding_rate_denominator": int(cr),
+                "verified": True,
+            })
     if not out:
         raise Undeterminable(
             "no recommended presets found in the MeshCore FAQ. The prose has probably "
@@ -206,6 +224,57 @@ def close(a: float, b: float, tol: float = 0.001) -> bool:
 
 # --- comparison --------------------------------------------------------------
 
+def diff_meshcore(expected: dict, observed: list[dict]) -> tuple[list[str], list[str]]:
+    """Compare the FAQ's recommended presets, keyed by the region text it gives.
+
+    The FAQ is prose, so the region name is whatever the sentence said -- which is
+    why the key is the prose text rather than a region code. That makes the
+    comparison stable as long as the sentence is, and an upstream rewrite of the
+    wording shows up as a removal plus an addition rather than silently comparing
+    two different things.
+
+    Follows diff_upstream's rule: a preset we never recorded is not drift, it is a
+    preset we have not started watching.
+    """
+    changes: list[str] = []
+    newly_seen: list[str] = []
+
+    obs_by_key: dict[str, dict] = {}
+    for p in observed:
+        obs_by_key[p["region_text"]] = p
+
+    for key in sorted(set(expected) | set(obs_by_key)):
+        # Keys starting with "_" are this file's own notes to a human. They are not
+        # presets, and treating one as a removed preset would manufacture drift out
+        # of an explanatory comment.
+        if key.startswith("_"):
+            continue
+        exp = expected.get(key)
+        obs = obs_by_key.get(key)
+        if exp is None:
+            newly_seen.append(f"{key} = {_fmt_mc(obs)}")
+            continue
+        if obs is None:
+            changes.append(f"meshcore: REMOVED preset {key!r} (we track it; the FAQ "
+                           f"no longer recommends one)")
+            continue
+        for field in ("frequency_mhz", "spreading_factor", "bandwidth_khz",
+                      "coding_rate_denominator"):
+            if field not in exp:
+                continue
+            old = float(exp[field])
+            new = float(obs[field])
+            if not close(old, new):
+                changes.append(
+                    f"meshcore: CHANGED {key!r}.{field}: {exp[field]} -> {obs[field]}")
+    return changes, newly_seen
+
+
+def _fmt_mc(p: dict) -> str:
+    return (f"{p['frequency_mhz']}MHz SF{p['spreading_factor']} "
+            f"BW{p['bandwidth_khz']} CR{p['coding_rate_denominator']}")
+
+
 def diff_upstream(expected: dict, observed: dict, keys: list[str], where: str) -> tuple[list[str], list[str]]:
     """Compare only the regions we actually track.
 
@@ -219,6 +288,9 @@ def diff_upstream(expected: dict, observed: dict, keys: list[str], where: str) -
     newly_seen: list[str] = []
 
     for region in sorted(set(expected) | set(observed)):
+        # See diff_meshcore: "_"-prefixed keys are notes to a human, not data.
+        if region.startswith("_"):
+            continue
         exp = expected.get(region)
         obs = observed.get(region)
         if exp is None:
@@ -265,6 +337,8 @@ def check_offline() -> int:
 
     changes: list[str] = []
     for region, exp in (data.get("meshtastic") or {}).items():
+        if region.startswith("_"):
+            continue
         row = fw.get(region)
         if row is None:
             changes.append(f"firmware: no region {region} in ChannelPlan.cpp")
@@ -299,6 +373,54 @@ def check_offline() -> int:
 
     print(f"\nno drift against the recorded expectations (checked {data.get('checked_on')})")
     return EXIT_OK
+
+
+def record_observations(observed_mt: dict, observed_mc: list[dict],
+                       undeterminable: list[str]) -> bool:
+    """Rewrite the expectations file with what was actually read. Returns True if written.
+
+    Split out from check_online so it can be tested without a network, and so the
+    rules below are stated once rather than being implied by a branch somewhere
+    inside the fetch logic.
+    """
+    data = json.loads(EXPECTATIONS.read_text(encoding="utf-8"))
+    today = data.get("checked_on")
+    wrote = False
+
+    if observed_mt:
+        for region, obs in observed_mt.items():
+            entry = (data.setdefault("meshtastic", {})).setdefault(region, {})
+            entry.update(obs)
+        wrote = True
+
+    if observed_mc:
+        for p in observed_mc:
+            entry = (data.setdefault("meshcore", {})).setdefault(p["region_text"], {})
+            entry.update({
+                "frequency_mhz": p["frequency_mhz"],
+                "spreading_factor": p["spreading_factor"],
+                "bandwidth_khz": p["bandwidth_khz"],
+                "coding_rate_denominator": p["coding_rate_denominator"],
+                "verified": bool(p.get("verified", True)),
+            })
+        wrote = True
+
+    # Only rewrite a source that was actually read. A monitor that records a parse
+    # failure as a change would make its own broken parser look like upstream
+    # drift, and the resulting version bump would be a lie.
+    if undeterminable:
+        print("\nnot rewriting: a source could not be read, and recording "
+              "nothing for it would look like agreement")
+        return False
+    if not wrote:
+        print("\nnot rewriting: neither source produced anything to record")
+        return False
+
+    data["checked_on"] = _today()
+    EXPECTATIONS.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8", newline="\n")
+    print(f"\nrewrote {EXPECTATIONS.name} (was {today})")
+    return True
 
 
 def check_online(write: bool) -> int:
@@ -338,16 +460,12 @@ def check_online(write: bool) -> int:
             "meshtastic")
 
     if observed_mc:
-        # Region labels in the FAQ are prose, so compare on the values that matter
-        # rather than trying to match names we cannot map reliably.
-        known = (data.get("meshcore") or {}).get("US_915") or {}
-        for p in observed_mc:
-            if not close(p["frequency_mhz"], known.get("frequency_mhz", -1.0)):
-                changes.append(
-                    f"meshcore: CHANGED/ADDED preset {p['region_text']!r}: "
-                    f"{p['frequency_mhz']}MHz SF{p['spreading_factor']} "
-                    f"BW{p['bandwidth_khz']} CR{p['coding_rate_denominator']}")
-                break
+        # Keyed by region text rather than compared as a set, so that a preset
+        # whose values changed and a preset that is entirely new are both visible,
+        # and neither is confused with a region that merely reads differently.
+        mc_changes, mc_new = diff_meshcore(data.get("meshcore") or {}, observed_mc)
+        changes.extend(mc_changes)
+        new_seen.extend(mc_new)
 
     print()
     for u in undeterminable:
@@ -357,15 +475,8 @@ def check_online(write: bool) -> int:
     for n in new_seen:
         print(f"note: newly observed, not previously tracked -- {n}")
 
-    if write and observed_mt and not undeterminable:
-        today = data.get("checked_on")
-        for region, obs in observed_mt.items():
-            entry = (data.setdefault("meshtastic", {})).setdefault(region, {})
-            entry.update(obs)
-        data["checked_on"] = _today()
-        EXPECTATIONS.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8",
-                                newline="\n")
-        print(f"\nrewrote {EXPECTATIONS.name} (was {today})")
+    if write:
+        record_observations(observed_mt, observed_mc, undeterminable)
 
     if undeterminable:
         # Never report agreement we did not verify.

@@ -1,0 +1,79 @@
+name: Release
+
+# A version becomes real here, when it is on main -- not when it was proposed.
+#
+# The drift monitor opens a pull request carrying the recorded upstream values and
+# the version bump in one commit. This workflow fires when that pull request lands
+# and points a tag at the merge commit on main. An earlier design tagged inside the
+# monitor, which would have produced a tag pointing at an unreviewed commit that is
+# not on main at all: a version nobody can check out from the branch they build.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the released version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Only when VERSION actually moved in this push. Without this a tag would be
+      # re-cut on every unrelated commit, which is how a tag ends up meaning
+      # "some commit on main" instead of "this version".
+      - name: Has VERSION changed in this push?
+        id: moved
+        run: |
+          set -euo pipefail
+          before=$(git rev-parse HEAD^)
+          old=$(git show "$before:VERSION" 2>/dev/null || echo "")
+          new=$(cat VERSION)
+          echo "VERSION: ${old:-<none>} -> $new"
+          if [ "$old" = "$new" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "old=$old"      >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag
+        if: steps.moved.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          tag="v$version"
+
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "::error::$tag already exists; refusing to move a released tag"
+            exit 1
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"
+
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            || echo "::warning::tag $tag pushed, but the release notes could not be generated"
+          echo "released $tag at $(git rev-parse HEAD)"
+
+      - name: Say so when there is nothing to tag
+        if: steps.moved.outputs.changed != 'true'
+        run: echo "VERSION did not change in this push; nothing to tag"
