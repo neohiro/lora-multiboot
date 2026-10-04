@@ -75,9 +75,11 @@ Instead, the layout **starts at one slot and grows as the board is commissioned*
 | State | Connections | Offered |
 |---|---|---|
 | Nothing provisioned | **1** | `ota_0` — MeshCore, as though it were the only option |
-| Slot 0 done | **2** | `ota_0` + the opening `ota_1` (Meshtastic) |
-| Slot 1 done | **2** | `ota_1` + the opening `ota_2` |
-| At capacity | **0** | nothing, because there is nowhere to put it |
+| Slot 0 done (MeshCore) | **2** | `ota_0` + the opening `ota_1` (Meshtastic) |
+| Slot 1 done (Meshtastic) | **2** | `ota_1` + the opening `ota_2` (Reticulum) |
+| Slot 2 done (Reticulum) | **2** | `ota_2` + the opening `ota_3` (LoRaWAN) |
+| Slot 3 done (LoRaWAN) | **2** | `ota_3` + the opening `ota_4` (Custom) |
+| At capacity (4 usable) | **0** | nothing, because there is nowhere to put it |
 
 USB, BLE and WiFi are interchangeable labels on the same service. A new owner
 connects once and gets one obvious choice; a second connection appears only when
@@ -191,6 +193,21 @@ cannot be provisioned, so the usable count is **N−1**:
 |---|---|---|
 | `quadboot.csv` | 5 | 4 |
 | `dualboot.csv` | 3 | 2 |
+
+## Quick start: flashing a board
+
+1. **Plug in the board** over USB (or connect via BLE/WiFi — same service, different transport).
+2. **List the layout** to see what slots exist: `python tools/flash.py list --table quadboot`
+3. **Provision the first slot** (MeshCore): `python tools/flash.py app 0 --app meshcore.bin`
+4. **Reboot** — the board now offers two connections: the MeshCore slot you just filled and the next empty slot.
+5. **Provision the second slot** (Meshtastic): `python tools/flash.py app 1 --app meshtastic.bin`
+6. **Select which slot boots** (optional): `python tools/flash.py app 0` to boot MeshCore, or `app 1` for Meshtastic.
+7. **Update the system layer** (bootloader/partition table) without touching slots: `python tools/flash.py update-system --bootloader boot.bin --part-table-bin table.bin`
+8. **Re-flash a bad image** without losing settings: `python tools/flash.py app 1 --app new-meshtastic.bin`
+9. **Erase a slot's firmware only** (keep settings): `python tools/flash.py app 1 --erase`
+10. **Erase a slot completely** (firmware + settings, irreversible): `python tools/flash.py app 1 --erase-settings`
+
+All commands validate the partition table against the actual flash size before writing. Nothing is erased until the input file is confirmed readable. The `--dry-run` flag prints the plan without writing.
 
 ## Uninstalling from the middle: no loss, and no compaction
 

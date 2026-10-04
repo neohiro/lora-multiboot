@@ -87,6 +87,12 @@ struct AirtimeEvent {
 // Over-counting makes the node transmit slightly less than it may. Under-counting
 // would make it unlawful while reporting compliance, which is the failure that
 // actually matters.
+//
+// When multiple slots share the single antenna, the region's duty-cycle limit
+// (10% for EU_868) is divided equally among the active slots. If N slots are
+// active, each slot gets (region_limit / N) of the total airtime budget. This
+// compensates for the shared radiotime so that the aggregate airtime across all
+// slots never exceeds the regulatory limit.
 class AirtimeGovernor {
  public:
   // `windowMs` is the averaging period. An hour is the usual regulatory reading of
@@ -113,7 +119,12 @@ class AirtimeGovernor {
   // wrong direction to be wrong in.
   AirtimeGovernor() = default;
 
-  explicit AirtimeGovernor(Region region, std::uint32_t windowMs = kDefaultWindowMs);
+  // `activeSlotCount` is the number of slots currently sharing the antenna.
+  // The effective duty-cycle limit is region_limit / activeSlotCount.
+  // A value of 0 or 1 means no division (single slot).
+  explicit AirtimeGovernor(Region region,
+                           std::uint32_t windowMs = kDefaultWindowMs,
+                           std::uint8_t activeSlotCount = 1);
 
   // Ask whether a transmission of this airtime may proceed at this time.
   //
@@ -142,8 +153,14 @@ class AirtimeGovernor {
   std::uint32_t windowMs() const { return windowMs_; }
   std::uint32_t bucketMs() const { return bucketMs_; }
 
-  // The cap in force, as a percentage.
+  // The cap in force, as a percentage (region limit divided by activeSlotCount).
   std::uint8_t limitPercent() const { return limitPercent_; }
+
+  // The number of active slots sharing the antenna.
+  std::uint8_t activeSlotCount() const { return activeSlotCount_; }
+
+  // Update the active slot count and recalculate the effective limit.
+  void setActiveSlotCount(std::uint8_t count);
 
   // The region whose cap is being enforced.
   Region region() const;
@@ -176,6 +193,7 @@ class AirtimeGovernor {
   std::uint32_t windowMs_ = kDefaultWindowMs;
   std::uint32_t bucketMs_ = kDefaultBucketMs;
   std::uint8_t limitPercent_ = dutyCycleFor(Region::EU_868);
+  std::uint8_t activeSlotCount_ = 1;
 
   std::uint64_t buckets_[kBuckets] = {};
   // Wall-clock time of the newest bucket's start, and whether anything is live.

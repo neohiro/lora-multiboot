@@ -86,6 +86,22 @@ tools/
 docs/                 this directory
 ```
 
+### Slot memory geometry
+
+Each slot reserves a fixed 3 MB stride in flash, split into:
+- **2 MB application** (`kSlotAppBytes = 0x200000`) — fits the ~1.2 MB images both
+  MeshCore and Meshtastic produce with room to grow
+- **1 MB filesystem** (`kSlotFsBytes = 0x100000`) — ample for channel keys, node
+  databases, and per-firmware settings
+
+The stride (`kSlotStrideBytes = 0x300000`) is uniform so slot *n*'s address is
+pure arithmetic: `kFirstSlotOffset + n * kSlotStrideBytes`. This makes growth
+provably append-only — a table rewrite cannot relocate live firmware.
+
+The shared RAM block (`SharedContext`) is **560 bytes total** regardless of slot
+count: one airtime governor, one radio plan, one set of frame counters, one boot
+record. Adding a fifth firmware role adds **zero shared RAM**.
+
 `firmware/src/main.cpp` includes `Arduino.h`, so the host gate compiles it against a
 small **type-check shim** (`tests/arduino_shim/Arduino.h`) rather than excluding it.
 It is compiled, never linked or executed — the point is only that the firmware's
@@ -119,6 +135,14 @@ sharing a filesystem label.
 `validateFrameworks()` judges **isolation, not presence**. A one-slot board is a
 legitimate state — it runs MeshCore alone — so demanding Meshtastic's slot would
 make the first successful provisioning look like a broken table.
+
+### `Airtime`
+
+LoRa airtime math + sliding-window duty-cycle governor. The EU default is 10%, not
+MeshCore's stock 50%. When multiple slots share the single antenna, the region's
+duty-cycle limit is divided equally among the active slots (e.g., 2 slots → 5% each,
+4 slots → 2.5% each), so the aggregate airtime never exceeds the regulatory limit.
+`AirtimeGovernor` takes an `activeSlotCount` parameter to compute the effective limit.
 
 ### `Provisioning`
 

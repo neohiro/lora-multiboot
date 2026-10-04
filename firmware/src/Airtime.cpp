@@ -91,7 +91,9 @@ std::uint32_t airtimeUs(const Modulation& m, std::uint16_t payloadBytes) {
 
 // --- AirtimeGovernor -------------------------------------------------------
 
-AirtimeGovernor::AirtimeGovernor(Region region, std::uint32_t windowMs)
+AirtimeGovernor::AirtimeGovernor(Region region,
+                                 std::uint32_t windowMs,
+                                 std::uint8_t activeSlotCount)
     : region_(region),
       windowMs_(windowMs == 0 ? kDefaultWindowMs : windowMs),
       bucketMs_((windowMs == 0 ? kDefaultWindowMs : windowMs) /
@@ -99,16 +101,30 @@ AirtimeGovernor::AirtimeGovernor(Region region, std::uint32_t windowMs)
                 ((windowMs == 0 ? kDefaultWindowMs : windowMs) %
                          static_cast<std::uint32_t>(kBuckets)
                      ? 1u
-                     : 0u)) {
+                     : 0u)),
+      activeSlotCount_(activeSlotCount == 0 ? 1 : activeSlotCount) {
   // A bucket must never round down to zero, or the ring would never advance.
   if (bucketMs_ == 0) bucketMs_ = 1;
-  setLimitPercent(dutyCycleFor(region));
+  // The effective limit is the region's limit divided by the number of active slots.
+  // This ensures the aggregate airtime across all slots never exceeds the regulatory limit.
+  const std::uint8_t regionLimit = dutyCycleFor(region);
+  const std::uint8_t effectiveLimit = regionLimit / activeSlotCount_;
+  setLimitPercent(effectiveLimit);
 }
 
 void AirtimeGovernor::setLimitPercent(std::uint8_t percent) {
   if (percent == 0) percent = 1;  // 0% would mean never transmitting
   if (percent > 100) percent = 100;
   limitPercent_ = percent;
+}
+
+void AirtimeGovernor::setActiveSlotCount(std::uint8_t count) {
+  if (count == 0) count = 1;
+  activeSlotCount_ = count;
+  // Recalculate the effective limit based on the new slot count.
+  const std::uint8_t regionLimit = dutyCycleFor(region_);
+  const std::uint8_t effectiveLimit = regionLimit / activeSlotCount_;
+  setLimitPercent(effectiveLimit);
 }
 
 Region AirtimeGovernor::region() const { return region_; }
