@@ -176,6 +176,11 @@ PY_TEST_FILES = [
     "tests/test_flash_tool.py",
     "tests/test_rf_drift.py",
     "tests/test_geometry_agreement.py",
+    # Executes the drift workflow's pull-request step against hostile reports. The
+    # report carries upstream prose, and it used to be spliced into a single-quoted
+    # shell argument -- one apostrophe away from running as commands with write
+    # access to the repository.
+    "tests/test_workflow_injection.py",
 ]
 
 # Scripts that must exit zero, run as-is.

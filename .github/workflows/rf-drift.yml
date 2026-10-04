@@ -147,9 +147,20 @@ jobs:
       - name: Open the pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_NUMBER: ${{ github.run_number }}
+          NEW_VERSION: ${{ steps.change.outputs.new }}
+          OLD_VERSION: ${{ steps.change.outputs.old }}
+          # Not ours. The MeshCore half of the report is prose captured out of an
+          # upstream FAQ by a regex, so a quote or a $(...) in that prose reaches
+          # here. It arrives through the environment rather than being written into
+          # the script, because `${{ }}` substitution happens before any shell sees
+          # the text: splicing it between quotes means one apostrophe in upstream
+          # prose ends the quoting and the rest of the report is parsed as commands.
+          # Reproduced before fixing; see the commit message.
+          DRIFT_REPORT: ${{ needs.check.outputs.report }}
         run: |
           set -euo pipefail
-          branch="rf-drift/${{ github.run_number }}"
+          branch="rf-drift/$RUN_NUMBER"
           git push -u origin "HEAD:$branch"
 
           # One open drift PR at a time. A second would be a second untested
@@ -162,18 +173,20 @@ jobs:
             exit 1
           fi
 
-          gh pr create \
-            --base main \
-            --head "$branch" \
-            --title "RF defaults moved upstream (v${{ steps.change.outputs.new }})" \
-            --body "$(printf '%s\n' \
+          # Assembled into a file from quoted literals plus expansions of shell
+          # variables. A variable's contents are never re-parsed as shell, so the
+          # report can contain quotes, backticks and substitutions safely.
+          {
+            printf '%s\n' \
               'Upstream radio defaults changed. This pull request records the newly' \
-              'observed values and cuts **v${{ steps.change.outputs.new }}**' \
-              '(was v${{ steps.change.outputs.old }}).' \
+              'observed values and cuts the version below.' \
               '' \
+              '```'
+            printf '%s\n' "$DRIFT_REPORT"
+            printf '%s\n' \
               '```' \
-              '${{ needs.check.outputs.report }}' \
-              '```' \
+              '' \
+              "Cuts **v$NEW_VERSION** (was v$OLD_VERSION)." \
               '' \
               '### What this means' \
               '' \
@@ -195,15 +208,28 @@ jobs:
               'commit as the recorded values so a tag cannot claim to contain a' \
               'number that is not in the tree it points at.' \
               '' \
-              'Merging this is what releases the version: `release.yml` tags `main`.' \
-              '' \
-              '<!-- drift-report:' \
-              '${{ needs.check.outputs.report }}' \
-              '-->')"
+              'Merging this is what releases the version: `release.yml` tags `main`.'
+          } > pr-body.md
+
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "RF defaults moved upstream (v$NEW_VERSION)" \
+            --body-file pr-body.md
+
+          # The body is kept as an artefact: if the PR looks wrong, the report that
+          # produced it is the first thing anyone will want, and it is upstream text
+          # that may have changed since.
+          echo "PR body written to pr-body.md ($(( $(wc -c < pr-body.md) )) bytes)"
 
       - name: Update the report issue if this is a repeat
         if: failure()
         uses: actions/github-script@v7
+        env:
+          # Through the environment, not into the script. A backtick or ${ in
+          # upstream prose would otherwise close the template literal and become
+          # JavaScript. process.env is a value; a spliced string is code.
+          DRIFT_REPORT: ${{ needs.check.outputs.report }}
         with:
           script: |
             await github.rest.issues.create({
@@ -213,7 +239,7 @@ jobs:
               body: ['Upstream RF defaults moved, but the pull request step failed.',
                      '',
                      '```',
-                     '${{ needs.check.outputs.report }}',
+                     process.env.DRIFT_REPORT,
                      '```'].join('\n'),
             });
 
@@ -227,6 +253,11 @@ jobs:
     steps:
       - name: Explain
         uses: actions/github-script@v7
+        env:
+          # Same reason as the pull request step: this text is upstream prose, and a
+          # backtick or ${ inside it must not be able to close the template literal
+          # and run as JavaScript.
+          DRIFT_REPORT: ${{ needs.check.outputs.report }}
         with:
           script: |
             // Comment on the open issue rather than opening a new one every week.
@@ -243,7 +274,7 @@ jobs:
               'risk rather than a missing nicety.',
               '',
               '```',
-              '${{ needs.check.outputs.report }}',
+              process.env.DRIFT_REPORT,
               '```',
               '',
               'Likely one of:',
