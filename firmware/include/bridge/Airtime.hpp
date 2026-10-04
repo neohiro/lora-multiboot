@@ -148,6 +148,21 @@ class AirtimeGovernor {
   // The region whose cap is being enforced.
   Region region() const;
 
+  // One behaviour worth knowing before deploying a node that runs for months.
+  //
+  // `nowMs` is expected to be a millisecond uptime counter, which on ESP32 wraps
+  // every ~49.7 days. A backwards jump is treated as "the clock restarted": every
+  // bucket is cleared, so the window refills. The consequence is one budget refill
+  // per wrap, not a continuous over-send.
+  //
+  // That is the right trade for a reboot (where the counter really does restart, and
+  // the board is genuinely a new session) and a negligible one for a wrap: an
+  // airtime-free window is worth at most a few seconds of transmission once every 50
+  // days, against a 10% ceiling that is otherwise never exceeded. Feeding a true
+  // monotonic 64-bit counter instead would remove the case entirely, at the cost of
+  // every caller having to own one.
+  static constexpr std::uint32_t kMillisWrapMs = 0xFFFFFFFFu;
+
   // Buckets currently holding airtime, for diagnostics.
   std::size_t activeBuckets() const;
 

@@ -259,17 +259,19 @@ ReconcileReport reconcile(const std::vector<TxProfile>& profiles) {
     return r;
   }
 
-  // Start from the widest, not the first. Merging by superset rather than by
-  // averaging is the whole idea.
+  // One pass to gather what the report needs: the carrier span, the widest bandwidth,
+  // the longest preamble, and every sync word that has to be accepted.
+  //
+  // Deliberately NOT a second opinion on mergeability. An earlier version also
+  // ranked pairwise divergences here, which meant two independent computations of
+  // the same question -- one here, one in leastUpperBound() -- free to disagree,
+  // with the more confident-looking answer winning. The merge decision has exactly
+  // one authority, below.
   float centreHz = profiles[0].frequencyMHz * 1000.0f;
   float lowestHz = centreHz;
   float highestHz = centreHz;
   float widestKHz = profiles[0].bandwidthKHz;
   std::uint8_t longestPreamble = profiles[0].preambleSymbols;
-  std::uint8_t slowestSf = profiles[0].spreadingFactor;
-  std::uint8_t crDenom = profiles[0].codingRateDenominator;
-
-  RxDivergence worst = RxDivergence::None;
 
   for (std::size_t i = 0; i < profiles.size(); ++i) {
     const TxProfile& p = profiles[i];
@@ -278,34 +280,10 @@ ReconcileReport reconcile(const std::vector<TxProfile>& profiles) {
     if (hz > highestHz) highestHz = hz;
     if (p.bandwidthKHz > widestKHz) widestKHz = p.bandwidthKHz;
     if (p.preambleSymbols > longestPreamble) longestPreamble = p.preambleSymbols;
-    if (p.spreadingFactor > slowestSf) slowestSf = p.spreadingFactor;
-    if (p.codingRateDenominator > crDenom) crDenom = p.codingRateDenominator;
 
-    if (i > 0) {
-      const RxDivergence d = divergenceBetween(profiles[0], p);
-      // Unmergeable wins over mergeable: if anything needs slicing, everything does,
-      // and reporting "merged" while half the profiles are unheard is exactly the
-      // silent failure this module exists to prevent.
-      const auto rank = [](RxDivergence v) -> int {
-        switch (v) {
-          case RxDivergence::None:
-            return 0;
-          case RxDivergence::BandwidthOnly:
-          case RxDivergence::PreambleOnly:
-            return 1;
-          case RxDivergence::FrequencySpan:
-            return 2;
-          case RxDivergence::SpreadingFactor:
-          case RxDivergence::CodingRate:
-            return 3;
-        }
-        return 0;
-      };
-      if (rank(d) > rank(worst)) worst = d;
-    }
-
-    // Sync words are collected regardless: even when slicing is required, each
-    // configuration needs its own word, and the operator wants to see the full set.
+    // Sync words are collected regardless of whether a merge exists: each
+    // configuration still needs its own word, and the operator wants to see the
+    // full set either way.
     if (p.syncWord == 0x00) {
       r.plan.promiscuous = true;
       continue;
@@ -319,27 +297,12 @@ ReconcileReport reconcile(const std::vector<TxProfile>& profiles) {
     }
   }
 
-  r.divergence = worst;
   const float spanKHz = highestHz - lowestHz;
   r.carrierSpanKHz = spanKHz;
   r.requiredBandwidthKHz = bandwidthToSpan(lowestHz / 1000.0f, highestHz / 1000.0f, widestKHz);
 
-  // Sync words are collected regardless: even when slicing is required, each
-  // configuration needs its own word, and the operator wants to see the full set.
-  for (std::size_t i = 0; i < profiles.size(); ++i) {
-    const std::uint8_t sw = profiles[i].syncWord;
-    if (sw == 0x00) {
-      r.plan.promiscuous = true;
-      continue;
-    }
-    bool present = false;
-    for (std::uint8_t k = 0; k < r.plan.syncWordCount; ++k) {
-      if (r.plan.syncWords[k] == sw) present = true;
-    }
-    if (!present && r.plan.syncWordCount < 8) {
-      r.plan.syncWords[r.plan.syncWordCount++] = sw;
-    }
-  }
+  // More than one sync word can only be accepted by loosening the match, which is
+  // exactly the promiscuous capture the whole design depends on.
   if (r.plan.syncWordCount > 1) r.plan.promiscuous = true;
 
   // The master: the least upper bound of everything installed. This is the "most
@@ -376,7 +339,7 @@ ReconcileReport reconcile(const std::vector<TxProfile>& profiles) {
   // No master exists. This is the honest answer for mismatched spreading factors,
   // mismatched coding rates, or carriers further apart than the radio can span.
   r.hasMaster = false;
-  r.divergence = why != RxDivergence::None ? why : worst;
+  r.divergence = why;
   r.distinctConfigs = profiles.size();
   r.singleConfigCoversAll = false;
   r.plan.profilesHeard = 0;

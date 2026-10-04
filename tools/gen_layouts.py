@@ -50,26 +50,38 @@ def build_dumper() -> Path | None:
         return None
 
     tmp = Path(tempfile.mkdtemp())
-    src = tmp / "dump-layout.cpp"
-    src.write_text(DUMP, newline="\n")
-    exe = tmp / ("dump-layout.exe" if sys.platform == "win32" else "dump-layout")
-    # Provisioning.cpp reaches into SlotLifecycle for the OTA staging region, so the
-    # dumper has to link it too. Listing dependencies by hand is exactly the kind of
-    # thing that rots, so this list mirrors what the gate compiles.
-    deps = ["Provisioning", "SlotTable", "SlotLifecycle"]
-    proc = subprocess.run(
-        [
-            cxx, "-std=c++17", f"-I{ROOT / 'firmware' / 'include'}", str(src),
-            *[str(ROOT / "firmware" / "src" / f"{d}.cpp") for d in deps],
-            "-o", str(exe),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stderr)
-        return None
-    return exe
+    try:
+        src = tmp / "dump-layout.cpp"
+        src.write_text(DUMP, newline="\n")
+        exe = tmp / ("dump-layout.exe" if sys.platform == "win32" else "dump-layout")
+        # Provisioning.cpp reaches into SlotLifecycle for the OTA staging region, so the
+        # dumper has to link it too. Listing dependencies by hand is exactly the kind of
+        # thing that rots, so this list mirrors what the gate compiles.
+        deps = ["Provisioning", "SlotTable", "SlotLifecycle"]
+        proc = subprocess.run(
+            [
+                cxx, "-std=c++17", f"-I{ROOT / 'firmware' / 'include'}", str(src),
+                *[str(ROOT / "firmware" / "src" / f"{d}.cpp") for d in deps],
+                "-o", str(exe),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            sys.stderr.write(proc.stderr)
+            return None
+
+        # The caller needs the built binary after this function returns, so the
+        # directory cannot be removed here. Copy the artifact somewhere stable and
+        # clean the tree -- otherwise every invocation (including each CI run) leaves
+        # a directory with a compiled object in the system temp area, forever.
+        out_dir = ROOT / "build"
+        out_dir.mkdir(exist_ok=True)
+        kept = out_dir / exe.name
+        shutil.copy2(exe, kept)
+        return kept
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 HEADER_NOTE = """\

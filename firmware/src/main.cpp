@@ -151,7 +151,7 @@ void reportRadio(const bridge::RadioPlanResult& radio) {
   mp.codingRateDenominator = m.codingRateDenominator;
   const bridge::Modulation mod = bridge::Modulation::fromPlan(mp);
   Serial.print("  airtime:     ");
-  Serial.print(bridge::airtimeUs(mod, 64) / 1000.0f, 2);
+  Serial.print(static_cast<float>(bridge::airtimeUs(mod, 64)) / 1000.0f, 2);
   Serial.println(" ms for a 64-byte frame");
 }
 
@@ -191,7 +191,9 @@ void reportSlots(const bridge::SlotTable& table, bridge::DeviceState& state) {
   }
 }
 
-void reportRoles(const bridge::SlotTable& table) {
+void reportRoles() {
+  // The role catalogue. How many of these actually fit is a flash question, answered
+  // by reportSlots(); how many are *valid* together is answered by auditBoard().
   Serial.println();
   Serial.println("Roles");
   std::size_t count = 0;
@@ -357,7 +359,7 @@ void setup() {
   rule();
   reportSlots(g_table, g_state);
   rule();
-  reportRoles(g_table);
+  reportRoles();
   rule();
   reportInventory(g_table, g_state);
   rule();

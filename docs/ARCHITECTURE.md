@@ -31,7 +31,7 @@ differ by one byte in the preamble. Everything else follows from that.
 | Frame decode → cross-protocol relay | **Not written** |
 | OLED / BLE rendering of the panel | **Not written** (rendering is tested; no driver yet) |
 
-1,241 assertions and 24 tool tests pass, compiled under `-Werror` with
+1,247 assertions and 24 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`. The current firmware boots, validates
 its own plan and layout, and reports every one of these on the serial log — and
 **transmits nothing**. `firmware/src/main.cpp` says so rather than pretending
@@ -86,10 +86,14 @@ tools/
 docs/                 this directory
 ```
 
-`firmware/src/main.cpp` includes `Arduino.h` and is therefore not part of the
-host gate — only the portable modules are. The gate compiles the code that is
-meant to be portable, and the flasher tests the code a new user runs before they
-have a C++ compiler.
+`firmware/src/main.cpp` includes `Arduino.h`, so the host gate compiles it against a
+small **type-check shim** (`tests/arduino_shim/Arduino.h`) rather than excluding it.
+It is compiled, never linked or executed — the point is only that the firmware's
+entry point is held to the same `-Werror` strictness as everything else, so a typo in
+the file a user flashes first does not need a board to find. It was previously in no
+build at all.
+
+The flasher tests the code a new user runs before they have a C++ compiler.
 
 ## Module responsibilities
 

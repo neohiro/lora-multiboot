@@ -185,11 +185,11 @@ SlotTable SlotTable::parse(const std::string& csv, std::uint32_t flashSizeBytes,
 std::uint32_t SlotTable::highestByteUsed() const {
   std::uint32_t high = 0;
   for (const Partition& p : parts_) {
-    // `blank` is authoritative, not `size == 0`: an explicit 0x0 is a real size
-    // that happens to be zero, while `blank` is the ESP-IDF shorthand for
-    // "runs to the end of flash".
-    if (p.blank) continue;
-    const std::uint32_t end = p.offset + p.size;
+    // A blank size means "runs to the end of flash", so it claims everything above
+    // its offset. Counting it as ending where it starts would report a table full of
+    // free space while one partition covers the whole chip.
+    const std::uint32_t end =
+        p.blank ? flashSizeBytes_ : p.offset + p.size;
     if (end > high) high = end;
   }
   return high;
@@ -261,8 +261,12 @@ TableReport SlotTable::validate() const {
   for (std::size_t i = 1; i < sorted.size(); ++i) {
     const Partition* prev = sorted[i - 1];
     const Partition* cur = sorted[i];
-    if (prev->blank) continue;  // extends to end of flash; bounds already checked
-    if (cur->offset < prev->offset + prev->size) {
+    // A blank size runs to the end of flash, so it overlaps anything that starts
+    // after it. Skipping such a row here would let an overlapping table validate
+    // cleanly -- and a validator that passes a broken table is worse than no
+    // validator, because it is trusted.
+    const std::uint32_t prevEnd = prev->blank ? flashSizeBytes_ : prev->offset + prev->size;
+    if (cur->offset < prevEnd) {
       r.status = TableStatus::Overlap;
       r.detail = "partitions claim the same bytes";
       r.label = cur->label;
@@ -325,6 +329,8 @@ TableReport SlotTable::validateFrameworks() const {
 }
 
 const char* SlotTable::describe() const {
+  // Same contract as ChannelPlan::describePlan(): a static buffer, single-consumer,
+  // UI-task only. Copy the result out before calling again.
   static char line[96];
   std::size_t i = 0;
   const auto put = [&](const char* s) {

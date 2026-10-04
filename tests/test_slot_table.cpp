@@ -270,6 +270,34 @@ void suite_slot_table() {
     CHECK_MSG(f.ok(), "one framework alone is isolated and fine");
   }
 
+  // --- a blank size covers the rest of the flash --------------------------
+  //
+  // ESP-IDF's "runs to end of flash" shorthand. It has to be treated as claiming
+  // everything above it, or the table quietly becomes invalid in a way the validator
+  // used to wave through -- and a validator that passes a broken table is worse than
+  // none, because it is trusted.
+  {
+    const char* csv =
+        "bootloader, app, factory, 0x0, 0x7000,\n"
+        "tail,      app, ota_0,   0x8000,,\n"
+        "after,     app, ota_1,   0x10000, 0x1000,\n";
+    const SlotTable t = SlotTable::parse(csv, k16Mb);
+    const TableReport v = t.validate();
+    CHECK_MSG(!v.ok(), "a partition after a run-to-end partition overlaps it");
+    CHECK_EQ(static_cast<int>(v.status), static_cast<int>(TableStatus::Overlap));
+    CHECK_EQ(v.label, std::string("after"));
+  }
+
+  {
+    // And it must not report a pile of free space while one partition covers the
+    // whole chip.
+    const char* csv = "tail, app, ota_0, 0x8000,,\n";
+    const SlotTable t = SlotTable::parse(csv, k16Mb);
+    CHECK_MSG(t.find("tail")->blank, "blank size recognised");
+    CHECK_EQ(t.highestByteUsed(), k16Mb);
+    CHECK_MSG(t.freeBytes() == 0, "a table covered to the end has no free space");
+  }
+
   // --- describe -------------------------------------------------------------
 
   {

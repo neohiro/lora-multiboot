@@ -108,7 +108,18 @@ def find_compiler(explicit: str | None) -> tuple[str, list[str]]:
         found = shutil.which(cand)
         if found:
             return found, STRICT_GCC
-    return "cl", STRICT_MSVC
+
+    # Falling through to a bare "cl" here would surface as a wall of linker output
+    # about a program that does not exist, which tells the reader nothing. Say what
+    # is actually wrong and what would fix it.
+    raise GateError(
+        "no C++ compiler found. The gate needs one and nothing else.\n"
+        "  Debian/Ubuntu : apt-get install g++\n"
+        "  Fedora/RHEL    : dnf install gcc-c++\n"
+        "  macOS          : xcode-select --install\n"
+        "  Windows        : install MSVC Build Tools, or MSYS2 (pacman -S mingw-w64-x86_64-gcc)\n"
+        "  or point at one explicitly:  set CXX=/path/to/g++"
+    )
 
 
 def compile_and_run(verbose: bool) -> int:
@@ -183,6 +194,44 @@ def run_python_tests(verbose: bool) -> int:
     return proc.returncode
 
 
+def compile_firmware_entry(verbose: bool) -> int:
+    """Type-check firmware/src/main.cpp, the one file the gate used to skip.
+
+    main.cpp includes Arduino.h, which is why it was never in the host gate -- and
+    that made it the single file in the project nobody ever compiled. It is the file
+    a user flashes first, so a typo in it should not need a board to discover.
+
+    A tiny Arduino shim provides Print and the radix macros. This is a type check,
+    not an emulator: nothing is executed, and the point is only that the entry point
+    is subject to the same -Werror strictness as everything else. Compiled to an
+    object, deliberately not linked -- there is no main() to link against.
+    """
+    cxx, base = find_compiler(os.environ.get("CXX"))
+    is_msvc = "cl" in Path(cxx).name.lower()
+
+    out_dir = ROOT / "build"
+    out_dir.mkdir(exist_ok=True)
+    obj = out_dir / ("main.o" if not is_msvc else "main.obj")
+
+    shim = ROOT / "tests" / "arduino_shim"
+    includes = [f"-I{shim}", f"-I{ROOT / 'firmware' / 'include'}"]
+    if is_msvc:
+        includes = [f"/I{shim}", f"/I{ROOT / 'firmware' / 'include'}"]
+
+    # No -Werror here beyond what the base flags carry: main.cpp is held to exactly
+    # the same standard as the portable modules, which is the entire point.
+    cmd = [cxx, *base, *includes, "-c", str(ROOT / "firmware" / "src" / "main.cpp")]
+    cmd += [f"/Fo{obj}"] if is_msvc else ["-o", str(obj)]
+
+    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stdout + proc.stderr)
+        return 1
+    if proc.stderr.strip():
+        sys.stderr.write(proc.stderr)
+    return 0
+
+
 def check_documented_counts(cpp_checks: int, py_tests: int) -> int:
     """The README and docs quote the gate's own totals. Keep them honest.
 
@@ -235,16 +284,26 @@ def main() -> int:
 
     py = run_python_tests(args.verbose)
 
+    entry = 0
+    print()
+    print("== firmware entry point (type check) ==")
+    entry = compile_firmware_entry(args.verbose)
+    if entry != 0:
+        print("main.cpp did not compile", file=sys.stderr)
+    else:
+        print("main.cpp compiles clean under -Werror")
+
     # Only meaningful when both halves passed; otherwise the numbers are not real.
     counts_ok = 0
     if cpp == 0 and py == 0:
         counts_ok = check_documented_counts(COUNT_CPP, COUNT_PY)
 
     print()
-    if cpp == 0 and py == 0 and counts_ok == 0:
+    if cpp == 0 and py == 0 and entry == 0 and counts_ok == 0:
         print("GATE PASS")
         return 0
-    print(f"GATE FAIL (firmware logic={cpp}, flashing tool={py}, docs={counts_ok})")
+    print(f"GATE FAIL (firmware logic={cpp}, flashing tool={py}, "
+          f"entry point={entry}, docs={counts_ok})")
     return 1
 
 
