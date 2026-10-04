@@ -126,28 +126,30 @@ constexpr RegionDefaults kRegions[] = {
         # The live file, so a refactor cannot quietly turn the offline check into
         # a no-op that always passes.
         rows = rf.parse_firmware_table(
-            (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8"))
+            (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8")
+        )
         self.assertIn("EU_868", rows)
         self.assertIn("US_915", rows)
 
 
 class Expectations(unittest.TestCase):
     def setUp(self):
-        self.data = json.loads(
-            (ROOT / "firmware" / "rf_defaults.json").read_text(encoding="utf-8"))
+        self.data = json.loads((ROOT / "firmware" / "rf_defaults.json").read_text(encoding="utf-8"))
 
     def test_meshtastic_regions_match_firmware_codes(self):
         # If these disagree the offline check compares nothing and reports success.
         # The meshtastic keys are RDEF region codes, which is what ChannelPlan.cpp
         # is keyed by, so they must match it exactly.
         rows = rf.parse_firmware_table(
-            (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8"))
+            (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8")
+        )
         for region in self.data.get("meshtastic", {}):
             if region.startswith("_"):
                 continue
             with self.subTest(region=region):
-                self.assertIn(region, rows,
-                              f"meshtastic.{region} is not a region in ChannelPlan.cpp")
+                self.assertIn(
+                    region, rows, f"meshtastic.{region} is not a region in ChannelPlan.cpp"
+                )
 
     def test_meshcore_keys_are_faq_prose_not_region_codes(self):
         # The opposite rule, on purpose. MeshCore states its presets in prose, so
@@ -156,14 +158,18 @@ class Expectations(unittest.TestCase):
         # provide -- which is how a fabricated EU_868 entry got recorded in the
         # first place.
         rows = rf.parse_firmware_table(
-            (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8"))
+            (ROOT / "firmware" / "src" / "ChannelPlan.cpp").read_text(encoding="utf-8")
+        )
         keys = [k for k in self.data.get("meshcore", {}) if not k.startswith("_")]
         self.assertTrue(keys, "no meshcore presets recorded at all")
         for key in keys:
             with self.subTest(key=key):
-                self.assertNotIn(key, rows,
-                                 "a meshcore key must be the FAQ's own wording, not "
-                                 "a region code copied from the firmware table")
+                self.assertNotIn(
+                    key,
+                    rows,
+                    "a meshcore key must be the FAQ's own wording, not "
+                    "a region code copied from the firmware table",
+                )
 
     def test_meshcore_presets_carry_a_frequency_and_are_verified(self):
         for key, entry in self.data.get("meshcore", {}).items():
@@ -171,9 +177,11 @@ class Expectations(unittest.TestCase):
                 continue
             with self.subTest(key=key):
                 self.assertIn("frequency_mhz", entry)
-                self.assertTrue(entry.get("verified"),
-                                f"meshcore.{key} is recorded unverified; the monitor "
-                                f"must report unconfirmed rather than treat it as fact")
+                self.assertTrue(
+                    entry.get("verified"),
+                    f"meshcore.{key} is recorded unverified; the monitor "
+                    f"must report unconfirmed rather than treat it as fact",
+                )
 
     def test_eu_still_carries_the_shared_carrier(self):
         # The premise. If this ever changes, the architecture is dead and the
@@ -190,8 +198,11 @@ class Expectations(unittest.TestCase):
 class DiffSemantics(unittest.TestCase):
     def test_changed_value_is_drift(self):
         changes, new = rf.diff_upstream(
-            {"EU_868": {"duty_cycle_percent": 10}}, {"EU_868": {"duty_cycle_percent": 1}},
-            ["duty_cycle_percent"], "test")
+            {"EU_868": {"duty_cycle_percent": 10}},
+            {"EU_868": {"duty_cycle_percent": 1}},
+            ["duty_cycle_percent"],
+            "test",
+        )
         self.assertEqual(len(changes), 1)
         self.assertIn("CHANGED", changes[0])
         self.assertEqual(new, [])
@@ -199,13 +210,15 @@ class DiffSemantics(unittest.TestCase):
     def test_untracked_region_is_not_drift(self):
         # The false-alarm that would otherwise fire every single run.
         changes, new = rf.diff_upstream(
-            {}, {"ANZ_915": {"band_start_mhz": 915.0}}, ["band_start_mhz"], "test")
+            {}, {"ANZ_915": {"band_start_mhz": 915.0}}, ["band_start_mhz"], "test"
+        )
         self.assertEqual(changes, [])
         self.assertEqual(len(new), 1)
 
     def test_removed_region_we_track_is_drift(self):
         changes, _ = rf.diff_upstream(
-            {"EU_868": {"band_start_mhz": 869.4}}, {}, ["band_start_mhz"], "test")
+            {"EU_868": {"band_start_mhz": 869.4}}, {}, ["band_start_mhz"], "test"
+        )
         self.assertEqual(len(changes), 1)
         self.assertIn("REMOVED", changes[0])
 
@@ -213,17 +226,21 @@ class DiffSemantics(unittest.TestCase):
         changes, _ = rf.diff_upstream(
             {"EU_868": {"band_start_mhz": 869.4}},
             {"EU_868": {"band_start_mhz": 869.400001}},
-            ["band_start_mhz"], "test")
+            ["band_start_mhz"],
+            "test",
+        )
         self.assertEqual(changes, [])
 
 
 class MeshCorePresetParsing(unittest.TestCase):
     """The FAQ is prose, so these are the cases prose actually produces."""
 
-    FAQ_SENTENCE = ("Recently, as of October 2025, many regions have moved to the "
-                    "narrow setting, aka using BW62.5 and a lower SF number (instead "
-                    "of the original SF11). For example, USA/Canada (Recommended) "
-                    "preset is 910.525MHz, SF7, BW62.5, CR5.")
+    FAQ_SENTENCE = (
+        "Recently, as of October 2025, many regions have moved to the "
+        "narrow setting, aka using BW62.5 and a lower SF number (instead "
+        "of the original SF11). For example, USA/Canada (Recommended) "
+        "preset is 910.525MHz, SF7, BW62.5, CR5."
+    )
 
     def test_the_real_sentence_yields_the_region_not_the_sentence(self):
         # This exact sentence is upstream today. The failure it caused: the region
@@ -238,9 +255,11 @@ class MeshCorePresetParsing(unittest.TestCase):
         self.assertEqual(out[0]["coding_rate_denominator"], 5)
 
     def test_a_region_capture_never_spans_two_sentences(self):
-        text = ("EU (Recommended) preset is 869.525MHz, SF11, BW250, CR5. "
-                "For example, USA/Canada (Recommended) preset is 910.525MHz, "
-                "SF7, BW62.5, CR5.")
+        text = (
+            "EU (Recommended) preset is 869.525MHz, SF11, BW250, CR5. "
+            "For example, USA/Canada (Recommended) preset is 910.525MHz, "
+            "SF7, BW62.5, CR5."
+        )
         keys = [p["region_text"] for p in rf.parse_meshcore_presets(text)]
         self.assertEqual(keys, ["EU (Recommended)", "USA/Canada (Recommended)"])
 
@@ -255,16 +274,21 @@ class MeshCoreDiff(unittest.TestCase):
     KEY = "USA/Canada (Recommended)"
 
     def _preset(self, **kw):
-        base = {"region_text": self.KEY, "frequency_mhz": 910.525,
-                "spreading_factor": 7, "bandwidth_khz": 62.5,
-                "coding_rate_denominator": 5, "verified": True}
+        base = {
+            "region_text": self.KEY,
+            "frequency_mhz": 910.525,
+            "spreading_factor": 7,
+            "bandwidth_khz": 62.5,
+            "coding_rate_denominator": 5,
+            "verified": True,
+        }
         base.update(kw)
         return base
 
     def test_changed_frequency_is_drift(self):
         changes, _ = rf.diff_meshcore(
-            {self.KEY: {"frequency_mhz": 910.525}},
-            [self._preset(frequency_mhz=915.0)])
+            {self.KEY: {"frequency_mhz": 910.525}}, [self._preset(frequency_mhz=915.0)]
+        )
         self.assertEqual(len(changes), 1)
         self.assertIn("CHANGED", changes[0])
         self.assertIn("915.0", changes[0])
@@ -272,8 +296,8 @@ class MeshCoreDiff(unittest.TestCase):
     def test_changed_spreading_factor_is_drift(self):
         # The narrow-band migration is exactly this: SF drops, carrier stays.
         changes, _ = rf.diff_meshcore(
-            {self.KEY: {"spreading_factor": 11}},
-            [self._preset(spreading_factor=7)])
+            {self.KEY: {"spreading_factor": 11}}, [self._preset(spreading_factor=7)]
+        )
         self.assertEqual(len(changes), 1)
         self.assertIn("spreading_factor", changes[0])
 
@@ -292,7 +316,9 @@ class MeshCoreDiff(unittest.TestCase):
         changes, new = rf.diff_upstream(
             {"_comment": ["a note"], "EU_868": {"band_start_mhz": 869.4}},
             {"EU_868": {"band_start_mhz": 869.4}},
-            ["band_start_mhz"], "test")
+            ["band_start_mhz"],
+            "test",
+        )
         self.assertEqual(changes, [])
         self.assertEqual(new, [])
 
@@ -311,21 +337,34 @@ class WritePath(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)
             exp = root / "rf_defaults.json"
-            exp.write_text(json.dumps({
-                "sources": {},
-                "meshtastic": {},
-                "meshcore": {},
-            }), encoding="utf-8")
+            exp.write_text(
+                json.dumps(
+                    {
+                        "sources": {},
+                        "meshtastic": {},
+                        "meshcore": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
             saved = rf.EXPECTATIONS
             rf.EXPECTATIONS = exp
             try:
                 key = "USA/Canada (Recommended)"
                 rf.record_observations(
                     {"EU_868": {"band_start_mhz": 869.4, "verified": True}},
-                    [{"region_text": key, "frequency_mhz": 910.525,
-                      "spreading_factor": 7, "bandwidth_khz": 62.5,
-                      "coding_rate_denominator": 5, "verified": True}],
-                    undeterminable=[])
+                    [
+                        {
+                            "region_text": key,
+                            "frequency_mhz": 910.525,
+                            "spreading_factor": 7,
+                            "bandwidth_khz": 62.5,
+                            "coding_rate_denominator": 5,
+                            "verified": True,
+                        }
+                    ],
+                    undeterminable=[],
+                )
             finally:
                 rf.EXPECTATIONS = saved
             data = json.loads(exp.read_text(encoding="utf-8"))
@@ -336,15 +375,20 @@ class WritePath(unittest.TestCase):
     def test_refuses_to_write_when_a_source_was_undeterminable(self):
         with tempfile.TemporaryDirectory() as td:
             exp = pathlib.Path(td) / "rf_defaults.json"
-            original = {"sources": {}, "meshtastic": {"EU_868": {"band_start_mhz": 869.4}},
-                        "meshcore": {}}
+            original = {
+                "sources": {},
+                "meshtastic": {"EU_868": {"band_start_mhz": 869.4}},
+                "meshcore": {},
+            }
             exp.write_text(json.dumps(original), encoding="utf-8")
             saved = rf.EXPECTATIONS
             rf.EXPECTATIONS = exp
             try:
                 wrote = rf.record_observations(
                     {"EU_868": {"band_start_mhz": 868.0}},
-                    [], undeterminable=["meshcore: fetch failed"])
+                    [],
+                    undeterminable=["meshcore: fetch failed"],
+                )
             finally:
                 rf.EXPECTATIONS = saved
             self.assertFalse(wrote)
@@ -355,8 +399,11 @@ class WritePath(unittest.TestCase):
         # An empty observation is not permission to blank the recorded values.
         with tempfile.TemporaryDirectory() as td:
             exp = pathlib.Path(td) / "rf_defaults.json"
-            original = {"sources": {}, "meshtastic": {"EU_868": {"band_start_mhz": 869.4}},
-                        "meshcore": {}}
+            original = {
+                "sources": {},
+                "meshtastic": {"EU_868": {"band_start_mhz": 869.4}},
+                "meshcore": {},
+            }
             exp.write_text(json.dumps(original), encoding="utf-8")
             saved = rf.EXPECTATIONS
             rf.EXPECTATIONS = exp
@@ -380,8 +427,10 @@ class FetchRetries(unittest.TestCase):
                 raise urllib.error.URLError("temporary failure in name resolution")
             return io.BytesIO(b"content")
 
-        with unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen), \
-             unittest.mock.patch.object(rf.time, "sleep", lambda _s: None):
+        with (
+            unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen),
+            unittest.mock.patch.object(rf.time, "sleep", lambda _s: None),
+        ):
             self.assertEqual(rf.fetch("https://example.invalid/x"), "content")
         self.assertEqual(len(calls), 2, "the first failure must be retried once")
 
@@ -392,8 +441,10 @@ class FetchRetries(unittest.TestCase):
             calls.append(req.full_url)
             raise urllib.error.URLError("404")
 
-        with unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen), \
-             unittest.mock.patch.object(rf.time, "sleep", lambda _s: None):
+        with (
+            unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen),
+            unittest.mock.patch.object(rf.time, "sleep", lambda _s: None),
+        ):
             with self.assertRaises(rf.Undeterminable) as cm:
                 rf.fetch("https://example.invalid/x")
         self.assertEqual(len(calls), 2, "exactly one retry, not a loop")
@@ -411,8 +462,10 @@ class FetchRetries(unittest.TestCase):
             calls.append(1)
             raise OSError("boom")
 
-        with unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen), \
-             unittest.mock.patch.object(rf.time, "sleep", lambda _s: None):
+        with (
+            unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen),
+            unittest.mock.patch.object(rf.time, "sleep", lambda _s: None),
+        ):
             with self.assertRaises(rf.Undeterminable):
                 rf.fetch("https://example.invalid/x", attempts=2)
         self.assertEqual(len(calls), 2)
@@ -427,10 +480,17 @@ class AtomicWrite(unittest.TestCase):
 
     def _original(self, tmp: pathlib.Path) -> pathlib.Path:
         exp = tmp / "rf_defaults.json"
-        exp.write_text(json.dumps({
-            "sources": {}, "checked_on": "2000-01-01",
-            "meshtastic": {"EU_868": {"duty_cycle_percent": 10}},
-            "meshcore": {}}), encoding="utf-8")
+        exp.write_text(
+            json.dumps(
+                {
+                    "sources": {},
+                    "checked_on": "2000-01-01",
+                    "meshtastic": {"EU_868": {"duty_cycle_percent": 10}},
+                    "meshcore": {},
+                }
+            ),
+            encoding="utf-8",
+        )
         return exp
 
     def test_the_write_leaves_no_temporary_file_behind(self):
@@ -440,15 +500,21 @@ class AtomicWrite(unittest.TestCase):
             saved = rf.EXPECTATIONS
             rf.EXPECTATIONS = exp
             try:
-                self.assertTrue(rf.record_observations(
-                    {"EU_868": {"duty_cycle_percent": 1}}, [], undeterminable=[]))
+                self.assertTrue(
+                    rf.record_observations(
+                        {"EU_868": {"duty_cycle_percent": 1}}, [], undeterminable=[]
+                    )
+                )
             finally:
                 rf.EXPECTATIONS = saved
-            self.assertEqual(json.loads(exp.read_text(encoding="utf-8"))
-                             ["meshtastic"]["EU_868"]["duty_cycle_percent"], 1)
+            self.assertEqual(
+                json.loads(exp.read_text(encoding="utf-8"))["meshtastic"]["EU_868"][
+                    "duty_cycle_percent"
+                ],
+                1,
+            )
             leftovers = [p.name for p in tmp.iterdir() if p.name.endswith(".tmp")]
-            self.assertEqual(leftovers, [],
-                             f"a temporary file was left behind: {leftovers}")
+            self.assertEqual(leftovers, [], f"a temporary file was left behind: {leftovers}")
 
     def test_a_failed_write_does_not_destroy_the_original(self):
         # Simulate the write failing partway, which is the case atomicity exists for.
@@ -468,8 +534,8 @@ class AtomicWrite(unittest.TestCase):
             try:
                 with self.assertRaises(OSError):
                     rf.record_observations(
-                        {"EU_868": {"duty_cycle_percent": 99}}, [],
-                        undeterminable=[])
+                        {"EU_868": {"duty_cycle_percent": 99}}, [], undeterminable=[]
+                    )
             finally:
                 pathlib.Path.replace = real_replace
                 rf.EXPECTATIONS = saved
@@ -477,8 +543,11 @@ class AtomicWrite(unittest.TestCase):
             # The old file is still intact and still valid JSON.
             self.assertEqual(exp.read_text(encoding="utf-8"), original)
             json.loads(exp.read_text(encoding="utf-8"))
-            self.assertEqual([p.name for p in tmp.iterdir() if p.name.endswith(".tmp")],
-                             [], "the failed write left its temporary file behind")
+            self.assertEqual(
+                [p.name for p in tmp.iterdir() if p.name.endswith(".tmp")],
+                [],
+                "the failed write left its temporary file behind",
+            )
 
     def test_it_really_is_atomic_and_not_truncate_then_write(self):
         with tempfile.TemporaryDirectory() as td:
@@ -498,15 +567,16 @@ class AtomicWrite(unittest.TestCase):
             rf.EXPECTATIONS = exp
             pathlib.Path.write_text = spy
             try:
-                rf.record_observations(
-                    {"EU_868": {"duty_cycle_percent": 5}}, [], undeterminable=[])
+                rf.record_observations({"EU_868": {"duty_cycle_percent": 5}}, [], undeterminable=[])
             finally:
                 pathlib.Path.write_text = real_write
                 rf.EXPECTATIONS = saved
 
-            self.assertEqual(seen, ["rf_defaults.json.tmp"],
-                             "the destination was written directly, so the rename "
-                             "is not providing atomicity")
+            self.assertEqual(
+                seen,
+                ["rf_defaults.json.tmp"],
+                "the destination was written directly, so the rename is not providing atomicity",
+            )
 
 
 class OfflineMode(unittest.TestCase):

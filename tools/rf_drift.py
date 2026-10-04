@@ -88,8 +88,7 @@ def fetch(url: str, attempts: int = 2) -> str:
     """
     last: Exception | None = None
     for attempt in range(max(1, attempts)):
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "lora-multiboot-drift/1"})
+        req = urllib.request.Request(url, headers={"User-Agent": "lora-multiboot-drift/1"})
         try:
             with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
                 return resp.read().decode("utf-8", errors="replace")
@@ -98,8 +97,7 @@ def fetch(url: str, attempts: int = 2) -> str:
             if attempt + 1 < max(1, attempts):
                 time.sleep(RETRY_BACKOFF_SECONDS)
     assert last is not None
-    raise Undeterminable(
-        f"could not fetch {url} after {attempts} attempts: {last}") from last
+    raise Undeterminable(f"could not fetch {url} after {attempts} attempts: {last}") from last
 
 
 # --- Meshtastic --------------------------------------------------------------
@@ -115,7 +113,7 @@ _MESHTASTIC_RDEF = re.compile(
     r"([0-9]+(?:\.[0-9]+)?)f\s*,\s*"
     r"([0-9]+(?:\.[0-9]+)?)f\s*,\s*"
     r"([0-9]+(?:\.[0-9]+)?)\s*,\s*"
-    r"[0-9]+(?:\.[0-9]+)?\s*,\s*"      # spare field, deliberately unnamed
+    r"[0-9]+(?:\.[0-9]+)?\s*,\s*"  # spare field, deliberately unnamed
     r"([0-9]+(?:\.[0-9]+)?)\s*,",
     re.IGNORECASE,
 )
@@ -154,7 +152,8 @@ def parse_meshtastic_regions(text: str) -> dict[str, dict]:
         raise Undeterminable(
             "no RDEF() region definitions found in the Meshtastic source. The layout "
             "of that file has probably changed; the monitor needs updating rather "
-            "than reporting a false all-clear.")
+            "than reporting a false all-clear."
+        )
     return {MT_REGION_ALIASES[k]: v for k, v in raw.items() if k in MT_REGION_ALIASES}
 
 
@@ -194,19 +193,22 @@ def parse_meshcore_presets(text: str) -> list[dict]:
     for sentence in _SENTENCE.split(text):
         for m in _MESHCORE_PRESET.finditer(sentence):
             region, freq, sf, bw, cr = m.groups()
-            out.append({
-                "region_text": region.strip(" .,-"),
-                "frequency_mhz": float(freq),
-                "spreading_factor": int(sf),
-                "bandwidth_khz": float(bw),
-                "coding_rate_denominator": int(cr),
-                "verified": True,
-            })
+            out.append(
+                {
+                    "region_text": region.strip(" .,-"),
+                    "frequency_mhz": float(freq),
+                    "spreading_factor": int(sf),
+                    "bandwidth_khz": float(bw),
+                    "coding_rate_denominator": int(cr),
+                    "verified": True,
+                }
+            )
     if not out:
         raise Undeterminable(
             "no recommended presets found in the MeshCore FAQ. The prose has probably "
             "been reworded; the monitor needs updating rather than reporting a false "
-            "all-clear.")
+            "all-clear."
+        )
     return out
 
 
@@ -239,7 +241,8 @@ def parse_firmware_table(text: str) -> dict[str, dict]:
         raise Undeterminable(
             "could not find the RegionDefaults table in ChannelPlan.cpp. If that "
             "struct's shape changed, the offline cross-check is silently comparing "
-            "nothing, which is the failure this monitor exists to avoid.")
+            "nothing, which is the failure this monitor exists to avoid."
+        )
     return out
 
 
@@ -248,6 +251,7 @@ def close(a: float, b: float, tol: float = 0.001) -> bool:
 
 
 # --- comparison --------------------------------------------------------------
+
 
 def diff_meshcore(expected: dict, observed: list[dict]) -> tuple[list[str], list[str]]:
     """Compare the FAQ's recommended presets, keyed by the region text it gives.
@@ -280,27 +284,35 @@ def diff_meshcore(expected: dict, observed: list[dict]) -> tuple[list[str], list
             newly_seen.append(f"{key} = {_fmt_mc(obs)}")
             continue
         if obs is None:
-            changes.append(f"meshcore: REMOVED preset {key!r} (we track it; the FAQ "
-                           f"no longer recommends one)")
+            changes.append(
+                f"meshcore: REMOVED preset {key!r} (we track it; the FAQ no longer recommends one)"
+            )
             continue
-        for field in ("frequency_mhz", "spreading_factor", "bandwidth_khz",
-                      "coding_rate_denominator"):
+        for field in (
+            "frequency_mhz",
+            "spreading_factor",
+            "bandwidth_khz",
+            "coding_rate_denominator",
+        ):
             if field not in exp:
                 continue
             old = float(exp[field])
             new = float(obs[field])
             if not close(old, new):
-                changes.append(
-                    f"meshcore: CHANGED {key!r}.{field}: {exp[field]} -> {obs[field]}")
+                changes.append(f"meshcore: CHANGED {key!r}.{field}: {exp[field]} -> {obs[field]}")
     return changes, newly_seen
 
 
 def _fmt_mc(p: dict) -> str:
-    return (f"{p['frequency_mhz']}MHz SF{p['spreading_factor']} "
-            f"BW{p['bandwidth_khz']} CR{p['coding_rate_denominator']}")
+    return (
+        f"{p['frequency_mhz']}MHz SF{p['spreading_factor']} "
+        f"BW{p['bandwidth_khz']} CR{p['coding_rate_denominator']}"
+    )
 
 
-def diff_upstream(expected: dict, observed: dict, keys: list[str], where: str) -> tuple[list[str], list[str]]:
+def diff_upstream(
+    expected: dict, observed: dict, keys: list[str], where: str
+) -> tuple[list[str], list[str]]:
     """Compare only the regions we actually track.
 
     A region we have never recorded is not drift -- it is a region we have not
@@ -322,19 +334,18 @@ def diff_upstream(expected: dict, observed: dict, keys: list[str], where: str) -
             newly_seen.append(f"{region} = {_fmt(obs)}")
             continue
         if obs is None:
-            changes.append(f"{where}: REMOVED {region} (we track it; upstream no longer "
-                           f"defines it)")
+            changes.append(
+                f"{where}: REMOVED {region} (we track it; upstream no longer defines it)"
+            )
             continue
         for key in keys:
             if key not in exp or key not in obs:
                 continue
             if isinstance(exp[key], bool) or isinstance(obs[key], bool):
                 if exp[key] != obs[key]:
-                    changes.append(
-                        f"{where}: CHANGED {region}.{key}: {exp[key]!r} -> {obs[key]!r}")
+                    changes.append(f"{where}: CHANGED {region}.{key}: {exp[key]!r} -> {obs[key]!r}")
             elif not close(float(exp[key]), float(obs[key])):
-                changes.append(
-                    f"{where}: CHANGED {region}.{key}: {exp[key]} -> {obs[key]}")
+                changes.append(f"{where}: CHANGED {region}.{key}: {exp[key]} -> {obs[key]}")
     return changes, newly_seen
 
 
@@ -371,15 +382,18 @@ def check_offline() -> int:
         if "band_start_mhz" in exp and not close(exp["band_start_mhz"], row["band_start_mhz"]):
             changes.append(
                 f"firmware: CHANGED {region}.band_start_mhz: "
-                f"{exp['band_start_mhz']} -> {row['band_start_mhz']}")
+                f"{exp['band_start_mhz']} -> {row['band_start_mhz']}"
+            )
         if "band_end_mhz" in exp and not close(exp["band_end_mhz"], row["band_end_mhz"]):
             changes.append(
                 f"firmware: CHANGED {region}.band_end_mhz: "
-                f"{exp['band_end_mhz']} -> {row['band_end_mhz']}")
+                f"{exp['band_end_mhz']} -> {row['band_end_mhz']}"
+            )
         if "duty_cycle_percent" in exp and exp["duty_cycle_percent"] != row["duty_cycle_percent"]:
             changes.append(
                 f"firmware: CHANGED {region}.duty_cycle_percent: "
-                f"{exp['duty_cycle_percent']} -> {row['duty_cycle_percent']}")
+                f"{exp['duty_cycle_percent']} -> {row['duty_cycle_percent']}"
+            )
 
     # The premise itself, checked locally: do the two still land on one carrier?
     print("shared-carrier premise, as compiled:")
@@ -387,8 +401,10 @@ def check_offline() -> int:
         shared = close(row["meshtastic_freq_mhz"], row["meshcore_freq_mhz"])
         mark = "shared" if shared else "MISMATCH"
         extra = "" if row["meshcore_freq_verified"] else "  (MeshCore default unconfirmed)"
-        print(f"  {region:<10} {row['meshtastic_freq_mhz']:>9.3f} / "
-              f"{row['meshcore_freq_mhz']:>9.3f} MHz  {mark}{extra}")
+        print(
+            f"  {region:<10} {row['meshtastic_freq_mhz']:>9.3f} / "
+            f"{row['meshcore_freq_mhz']:>9.3f} MHz  {mark}{extra}"
+        )
 
     if changes:
         print("\nDRIFT between recorded expectations and the firmware table:")
@@ -400,8 +416,9 @@ def check_offline() -> int:
     return EXIT_OK
 
 
-def record_observations(observed_mt: dict, observed_mc: list[dict],
-                       undeterminable: list[str]) -> bool:
+def record_observations(
+    observed_mt: dict, observed_mc: list[dict], undeterminable: list[str]
+) -> bool:
     """Rewrite the expectations file with what was actually read. Returns True if written.
 
     Split out from check_online so it can be tested without a network, and so the
@@ -421,21 +438,25 @@ def record_observations(observed_mt: dict, observed_mc: list[dict],
     if observed_mc:
         for p in observed_mc:
             entry = (data.setdefault("meshcore", {})).setdefault(p["region_text"], {})
-            entry.update({
-                "frequency_mhz": p["frequency_mhz"],
-                "spreading_factor": p["spreading_factor"],
-                "bandwidth_khz": p["bandwidth_khz"],
-                "coding_rate_denominator": p["coding_rate_denominator"],
-                "verified": bool(p.get("verified", True)),
-            })
+            entry.update(
+                {
+                    "frequency_mhz": p["frequency_mhz"],
+                    "spreading_factor": p["spreading_factor"],
+                    "bandwidth_khz": p["bandwidth_khz"],
+                    "coding_rate_denominator": p["coding_rate_denominator"],
+                    "verified": bool(p.get("verified", True)),
+                }
+            )
         wrote = True
 
     # Only rewrite a source that was actually read. A monitor that records a parse
     # failure as a change would make its own broken parser look like upstream
     # drift, and the resulting version bump would be a lie.
     if undeterminable:
-        print("\nnot rewriting: a source could not be read, and recording "
-              "nothing for it would look like agreement")
+        print(
+            "\nnot rewriting: a source could not be read, and recording "
+            "nothing for it would look like agreement"
+        )
         return False
     if not wrote:
         print("\nnot rewriting: neither source produced anything to record")
@@ -496,9 +517,11 @@ def check_online(write: bool) -> int:
 
     if observed_mt:
         changes, new_seen = diff_upstream(
-            data.get("meshtastic") or {}, observed_mt,
+            data.get("meshtastic") or {},
+            observed_mt,
             ["band_start_mhz", "band_end_mhz", "duty_cycle_percent", "power_limit_dbm"],
-            "meshtastic")
+            "meshtastic",
+        )
 
     if observed_mc:
         # Keyed by region text rather than compared as a set, so that a preset
@@ -530,16 +553,20 @@ def check_online(write: bool) -> int:
 
 def _today() -> str:
     import datetime
+
     return datetime.date.today().isoformat()
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--offline", action="store_true",
-                    help="compare the recorded expectations against ChannelPlan.cpp only")
-    ap.add_argument("--write", action="store_true",
-                    help="record newly observed upstream values")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--offline",
+        action="store_true",
+        help="compare the recorded expectations against ChannelPlan.cpp only",
+    )
+    ap.add_argument("--write", action="store_true", help="record newly observed upstream values")
     args = ap.parse_args()
 
     if args.offline:

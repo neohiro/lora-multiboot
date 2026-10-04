@@ -10,7 +10,6 @@ ends up written to a board.
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -60,9 +59,13 @@ def build_dumper() -> Path | None:
         deps = ["Provisioning", "SlotTable", "SlotLifecycle"]
         proc = subprocess.run(
             [
-                cxx, "-std=c++17", f"-I{ROOT / 'firmware' / 'include'}", str(src),
+                cxx,
+                "-std=c++17",
+                f"-I{ROOT / 'firmware' / 'include'}",
+                str(src),
                 *[str(ROOT / "firmware" / "src" / f"{d}.cpp") for d in deps],
-                "-o", str(exe),
+                "-o",
+                str(exe),
             ],
             capture_output=True,
             text=True,

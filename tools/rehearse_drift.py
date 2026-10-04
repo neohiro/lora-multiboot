@@ -6,6 +6,7 @@ that what would be recorded and what would be reported are both right. The point
 is that the workflow's version branch is exercised against a real change, because
 the branch that has never run is the branch that is wrong.
 """
+
 import importlib.util
 import json
 import pathlib
@@ -21,7 +22,9 @@ failures = []
 
 
 def check(label, cond, detail=""):
-    print(f"  {'ok  ' if cond else 'FAIL'} {label}{(' -- ' + detail) if detail and not cond else ''}")
+    print(
+        f"  {'ok  ' if cond else 'FAIL'} {label}{(' -- ' + detail) if detail and not cond else ''}"
+    )
     if not cond:
         failures.append(label)
 
@@ -34,10 +37,12 @@ RDEF(EU_868, 869.4f, 869.60f, 1, 0, 20, 0, 0, 0, 0, 0)
 RDEF(US_915, 902.0f, 928.0f, 100, 0, 30, 0, 0, 0, 0, 0)
 """
 
-UNCHANGED_MC = ('Recently, as of October 2025, many regions have moved to the narrow '
-                'setting, aka using BW62.5 and a lower SF number (instead of the '
-                'original SF11). For example, USA/Canada (Recommended) preset is '
-                '910.525MHz, SF7, BW62.5, CR5.')
+UNCHANGED_MC = (
+    "Recently, as of October 2025, many regions have moved to the narrow "
+    "setting, aka using BW62.5 and a lower SF number (instead of the "
+    "original SF11). For example, USA/Canada (Recommended) preset is "
+    "910.525MHz, SF7, BW62.5, CR5."
+)
 
 print("== a real upstream change is detected ==")
 mt = rf.parse_meshtastic_regions(DOCTORED_MT)
@@ -48,9 +53,11 @@ check("untracked US_915 is not returned", "US_915" not in mt, "US_915 is not a t
 
 data = json.loads((ROOT / "firmware" / "rf_defaults.json").read_text(encoding="utf-8"))
 changes, new_seen = rf.diff_upstream(
-    data.get("meshtastic") or {}, mt,
+    data.get("meshtastic") or {},
+    mt,
     ["band_start_mhz", "band_end_mhz", "duty_cycle_percent", "power_limit_dbm"],
-    "meshtastic")
+    "meshtastic",
+)
 mc_changes, mc_new = rf.diff_meshcore(data.get("meshcore") or {}, mc)
 
 joined = " ".join(changes)
@@ -64,8 +71,10 @@ check("nothing newly seen", not new_seen and not mc_new, f"{new_seen} {mc_new}")
 print("== what gets recorded is what was observed ==")
 with tempfile.TemporaryDirectory() as td:
     exp = pathlib.Path(td) / "rf_defaults.json"
-    exp.write_text(json.dumps({"sources": {}, "meshtastic": data["meshtastic"],
-                               "meshcore": data["meshcore"]}), encoding="utf-8")
+    exp.write_text(
+        json.dumps({"sources": {}, "meshtastic": data["meshtastic"], "meshcore": data["meshcore"]}),
+        encoding="utf-8",
+    )
     saved = rf.EXPECTATIONS
     rf.EXPECTATIONS = exp
     try:
@@ -77,14 +86,16 @@ with tempfile.TemporaryDirectory() as td:
     check("duty cycle recorded", out["meshtastic"]["EU_868"]["duty_cycle_percent"] == 1)
     check("power limit recorded", out["meshtastic"]["EU_868"]["power_limit_dbm"] == 20)
     check("MeshCore still recorded", "USA/Canada (Recommended)" in out["meshcore"])
-    check("EU MeshCore preset not invented", "EU_868" not in out["meshcore"],
-          "a preset the FAQ does not state must never appear")
+    check(
+        "EU MeshCore preset not invented",
+        "EU_868" not in out["meshcore"],
+        "a preset the FAQ does not state must never appear",
+    )
 
 print("== a parse failure is not drift and not a rewrite ==")
 with tempfile.TemporaryDirectory() as td:
     exp = pathlib.Path(td) / "rf_defaults.json"
-    original = {"sources": {}, "meshtastic": {"EU_868": {"duty_cycle_percent": 10}},
-                "meshcore": {}}
+    original = {"sources": {}, "meshtastic": {"EU_868": {"duty_cycle_percent": 10}}, "meshcore": {}}
     exp.write_text(json.dumps(original), encoding="utf-8")
     saved = rf.EXPECTATIONS
     rf.EXPECTATIONS = exp

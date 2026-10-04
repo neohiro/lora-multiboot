@@ -202,8 +202,7 @@ def run_python_tests(verbose: bool) -> int:
     worst = 0
     total = 0
     for rel in PY_TEST_FILES:
-        proc = subprocess.run(
-            [sys.executable, rel], cwd=ROOT, capture_output=True, text=True)
+        proc = subprocess.run([sys.executable, rel], cwd=ROOT, capture_output=True, text=True)
         m = re.search(r"Ran (\d+) tests?", proc.stderr)
         n = int(m.group(1)) if m else 0
         total += n
@@ -214,8 +213,7 @@ def run_python_tests(verbose: bool) -> int:
     print(f"python tests: {total} total")
 
     for rel in PY_CHECKS:
-        proc = subprocess.run(
-            [sys.executable, rel], cwd=ROOT, capture_output=True, text=True)
+        proc = subprocess.run([sys.executable, rel], cwd=ROOT, capture_output=True, text=True)
         if proc.returncode != 0:
             sys.stdout.write(proc.stdout)
             sys.stderr.write(proc.stderr)
@@ -278,12 +276,13 @@ def check_documented_counts(cpp_checks: int, py_tests: int) -> int:
     A document that quotes nothing is left alone -- this asserts accuracy, not the
     presence of a boast.
     """
-    pattern = re.compile(
-        r"([\d,]+)\s+assertions?\s+and\s+(\d+)\s+tool\s+tests", re.IGNORECASE)
+    pattern = re.compile(r"([\d,]+)\s+assertions?\s+and\s+(\d+)\s+tool\s+tests", re.IGNORECASE)
 
     problems: list[str] = []
-    for name in ("README.md", *sorted(str(p.relative_to(ROOT))
-                                      for p in (ROOT / "docs").glob("*.md"))):
+    for name in (
+        "README.md",
+        *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "docs").glob("*.md")),
+    ):
         path = ROOT / name
         if not path.is_file():
             continue
@@ -294,14 +293,14 @@ def check_documented_counts(cpp_checks: int, py_tests: int) -> int:
                 if claimed_cpp != cpp_checks or claimed_py != py_tests:
                     problems.append(
                         f"{name}:{lineno}: says {claimed_cpp} assertions / "
-                        f"{claimed_py} tool tests, actual is {cpp_checks} / {py_tests}")
+                        f"{claimed_py} tool tests, actual is {cpp_checks} / {py_tests}"
+                    )
 
     if problems:
         print("\n== documented totals are stale ==", file=sys.stderr)
         for p in problems:
             print(f"  {p}", file=sys.stderr)
-        print("\n  update the quoted totals, or the gate will keep failing here.",
-              file=sys.stderr)
+        print("\n  update the quoted totals, or the gate will keep failing here.", file=sys.stderr)
         return 1
     return 0
 
@@ -337,8 +336,10 @@ def main() -> int:
     if cpp == 0 and py == 0 and entry == 0 and counts_ok == 0:
         print("GATE PASS")
         return 0
-    print(f"GATE FAIL (firmware logic={cpp}, flashing tool={py}, "
-          f"entry point={entry}, docs={counts_ok})")
+    print(
+        f"GATE FAIL (firmware logic={cpp}, flashing tool={py}, "
+        f"entry point={entry}, docs={counts_ok})"
+    )
     return 1
 
 

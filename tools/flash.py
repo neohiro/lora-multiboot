@@ -41,8 +41,10 @@ def _geometry_constants() -> dict[str, int]:
     above it resolves, and a hypothetical cycle ends as a KeyError here rather than
     a RecursionError in somebody's release.
     """
-    pending = [(m.group(1), m.group(2).split("//")[0].strip())
-               for m in _CONST_RE.finditer(PROVISIONING.read_text(encoding="utf-8"))]
+    pending = [
+        (m.group(1), m.group(2).split("//")[0].strip())
+        for m in _CONST_RE.finditer(PROVISIONING.read_text(encoding="utf-8"))
+    ]
     out: dict[str, int] = {}
     for _ in range(len(pending) + 1):
         if not pending:
@@ -73,7 +75,8 @@ def read_geometry_constants() -> dict[str, int]:
         return _geometry_constants()
     except OSError as exc:
         raise FlashError(
-            f"cannot read {PROVISIONING}, which owns the flash geometry: {exc}") from exc
+            f"cannot read {PROVISIONING}, which owns the flash geometry: {exc}"
+        ) from exc
 
 
 def require_file(path: Path, what: str) -> int:
@@ -110,7 +113,8 @@ def geometry_constant(name: str) -> int:
     if name not in consts:
         raise FlashError(
             f"{PROVISIONING.name} does not define {name}; refusing to guess the "
-            f"flash geometry. Constants found: {', '.join(sorted(consts)) or 'none'}")
+            f"flash geometry. Constants found: {', '.join(sorted(consts)) or 'none'}"
+        )
     return consts[name]
 
 
@@ -238,9 +242,9 @@ def validate(parts: list[Part], flash_size: int) -> None:
         if part.subtype != want:
             raise FlashError(
                 f"{label} is declared {part.subtype!r}, expected {want!r}. "
-"Meshtastic and MeshCore must each get the filesystem their own code mounts; "
-                   "handing either side the other's makes it format the wrong one on boot and "
-                   "lose the settings on the other side of the pair."
+                "Meshtastic and MeshCore must each get the filesystem their own code mounts; "
+                "handing either side the other's makes it format the wrong one on boot and "
+                "lose the settings on the other side of the pair."
             )
 
 
@@ -279,9 +283,7 @@ def chip_flash_size(port: str) -> int:
     download rather than a wrong assumption.
     """
     if shutil.which("esptool") is None and shutil.which("esptool.py") is None:
-        raise FlashError(
-            "esptool not found. Install it with: pip install esptool"
-        )
+        raise FlashError("esptool not found. Install it with: pip install esptool")
     tool = shutil.which("esptool") or shutil.which("esptool.py")
     proc = subprocess.run(
         [tool, "--chip", "esp32s3", "--port", port, "flash_id"],
@@ -324,10 +326,14 @@ def system_pieces(csv_path: Path) -> dict[str, tuple[int, int]]:
     out: dict[str, tuple[int, int]] = {
         # The two pieces that exist outside the table, from the constants that own
         # them rather than from numbers written here.
-        "bootloader": (geometry_constant("kBootloaderOffset"),
-                       geometry_constant("kBootloaderSize")),
-        "partition_tbl": (geometry_constant("kPartitionTableOffset"),
-                          geometry_constant("kPartitionTableSize")),
+        "bootloader": (
+            geometry_constant("kBootloaderOffset"),
+            geometry_constant("kBootloaderSize"),
+        ),
+        "partition_tbl": (
+            geometry_constant("kPartitionTableOffset"),
+            geometry_constant("kPartitionTableSize"),
+        ),
     }
     for p in parts:
         if p.offset + p.size > first_slot:
@@ -354,8 +360,7 @@ def cmd_list(args) -> int:
     # system_pieces() includes the bootloader and the partition table, which exist
     # outside the CSV on purpose. Listing only rows here would under-report what an
     # update would actually rewrite.
-    for label, (offset, size) in sorted(system_pieces(csv_path).items(),
-                                        key=lambda kv: kv[1][0]):
+    for label, (offset, size) in sorted(system_pieces(csv_path).items(), key=lambda kv: kv[1][0]):
         implicit = "" if any(p.label == label for p in parts) else "   (implicit)"
         print(f"  0x{offset:06X}  {label:<15} {size:>8} B{implicit}")
 
@@ -366,9 +371,10 @@ def cmd_list(args) -> int:
     # A slot's filesystem is the fs_* row that begins exactly where its app ends.
     for sp in [q for q in parts if q.label.startswith("ota_")]:
         line = f"  {sp.label:<6} 0x{sp.offset:06X}  app {sp.size // 1024}K"
-        fs = next((q for q in parts
-                   if q.label.startswith("fs_")
-                   and q.offset == sp.offset + sp.size), None)
+        fs = next(
+            (q for q in parts if q.label.startswith("fs_") and q.offset == sp.offset + sp.size),
+            None,
+        )
         if fs:
             line += f"   settings 0x{fs.offset:06X} ({fs.size // 1024}K, {fs.subtype})"
         else:
@@ -408,9 +414,7 @@ def cmd_update_system(args) -> int:
         offset, capacity = pieces[label]
         size = require_file(path, label)
         if size > capacity:
-            raise FlashError(
-                f"{label}: {path.name} is {size} B but the partition is {capacity} B"
-            )
+            raise FlashError(f"{label}: {path.name} is {size} B but the partition is {capacity} B")
         if offset + size > region_end:
             raise FlashError(f"{label}: would extend past the system region")
         plan.append(Write(label, offset, size, path))
@@ -451,23 +455,33 @@ def cmd_app(args) -> int:
         # The destructive one. Deliberately a separate, explicit flag rather than a
         # variant of --erase, because a bad image and "forget this node's identity
         # on the mesh" are different requests and conflating them loses channel keys.
-        fs = next((p for p in parts if p.label.startswith("fs_")
-                   and p.offset == target.offset + target.size), None)
+        fs = next(
+            (
+                p
+                for p in parts
+                if p.label.startswith("fs_") and p.offset == target.offset + target.size
+            ),
+            None,
+        )
         print(f"erasing {label} at 0x{target.offset:06X} ({target.size // 1024}K)")
         if fs is None:
             raise FlashError(
                 f"no settings partition found immediately after {label}; refusing to "
-                "guess which one you meant")
+                "guess which one you meant"
+            )
         print(f"erasing {fs.label} at 0x{fs.offset:06X} ({fs.size // 1024}K) as well")
         print("\nThis DESTROYS the slot's settings: channel keys, node database,")
         print("and its identity on the mesh. It cannot be undone.")
         if args.dry_run:
             print("\ndry run: nothing written.")
             return 0
-        return _run_esptool(args, [
-            Write(label, target.offset, target.size, None),
-            Write(fs.label, fs.offset, fs.size, None),
-        ])
+        return _run_esptool(
+            args,
+            [
+                Write(label, target.offset, target.size, None),
+                Write(fs.label, fs.offset, fs.size, None),
+            ],
+        )
 
     if args.erase:
         print(f"erasing {label} at 0x{target.offset:06X} ({target.size // 1024}K)")
@@ -499,25 +513,33 @@ def cmd_app(args) -> int:
 
 def _run_esptool(args, plan: list[Write]) -> int:
     if shutil.which("esptool") is None and shutil.which("esptool.py") is None:
-        print("error: esptool not found. Install it with: pip install esptool",
-              file=sys.stderr)
+        print("error: esptool not found. Install it with: pip install esptool", file=sys.stderr)
         return 2
     tool = shutil.which("esptool") or shutil.which("esptool.py")
 
     port = find_port(getattr(args, "port", None))
-    flash_size = chip_flash_size(port) if getattr(args, "flash_size", 16) == 0 else \
-        args.flash_size * 1024 * 1024
+    flash_size = (
+        chip_flash_size(port)
+        if getattr(args, "flash_size", 16) == 0
+        else args.flash_size * 1024 * 1024
+    )
 
     base = [
         tool,
-        "--chip", "esp32s3",
-        "--port", port,
-        "--baud", args.baud,
+        "--chip",
+        "esp32s3",
+        "--port",
+        port,
+        "--baud",
+        args.baud,
     ]
     write_opts = [
-        "--flash_mode", "dio",
-        "--flash_freq", "80m",
-        "--flash_size", f"{flash_size // (1024 * 1024)}MB",
+        "--flash_mode",
+        "dio",
+        "--flash_freq",
+        "80m",
+        "--flash_size",
+        f"{flash_size // (1024 * 1024)}MB",
     ]
 
     rc = 0
@@ -530,9 +552,7 @@ def _run_esptool(args, plan: list[Write]) -> int:
     # option, so `app N --erase` would simply fail.
     for w in [x for x in plan if x.path is None]:
         print(f"  erasing 0x{w.offset:06X} +0x{w.size:X} ({w.label})")
-        rc = subprocess.run(
-            base + ["erase_region", f"0x{w.offset:X}", f"0x{w.size:X}"]
-        ).returncode
+        rc = subprocess.run(base + ["erase_region", f"0x{w.offset:X}", f"0x{w.size:X}"]).returncode
         if rc != 0:
             return rc
 
@@ -548,12 +568,20 @@ def _run_esptool(args, plan: list[Write]) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--table", default="quadboot", choices=["quadboot", "dualboot"],
-                    help="partition layout (default: quadboot)")
+    ap.add_argument(
+        "--table",
+        default="quadboot",
+        choices=["quadboot", "dualboot"],
+        help="partition layout (default: quadboot)",
+    )
     ap.add_argument("--port")
     ap.add_argument("--baud", default="460800")
-    ap.add_argument("--flash-size", type=int, default=16,
-                    help="flash size in MB, or 0 to ask the chip (default: 16)")
+    ap.add_argument(
+        "--flash-size",
+        type=int,
+        default=16,
+        help="flash size in MB, or 0 to ask the chip (default: 16)",
+    )
     ap.add_argument("--dry-run", action="store_true", help="validate and print, write nothing")
 
     sub = ap.add_subparsers(dest="command")
@@ -573,11 +601,15 @@ def main() -> int:
     p_app = sub.add_parser("app", help="write, reflash or erase one slot")
     p_app.add_argument("slot", type=int, help="slot number, e.g. 0 or 1")
     p_app.add_argument("--app", type=Path, help="firmware image to write into the slot")
-    p_app.add_argument("--erase", action="store_true",
-                       help="erase the slot's firmware, keeping its settings")
-    p_app.add_argument("--erase-settings", action="store_true",
-                       help="erase the firmware AND its settings partition. "
-                            "Destructive and irreversible: loses channel keys.")
+    p_app.add_argument(
+        "--erase", action="store_true", help="erase the slot's firmware, keeping its settings"
+    )
+    p_app.add_argument(
+        "--erase-settings",
+        action="store_true",
+        help="erase the firmware AND its settings partition. "
+        "Destructive and irreversible: loses channel keys.",
+    )
     p_app.set_defaults(func=cmd_app)
 
     # Legacy full-flash path, kept because it is still the right thing when
@@ -636,8 +668,9 @@ def cmd_full(args) -> int:
         Write("partition_tbl", *system["partition_tbl"], args.part_table_bin),
     ]
     if args.otadata is not None:
-        plan.append(Write("otadata", by_label["otadata"].offset,
-                          by_label["otadata"].size, args.otadata))
+        plan.append(
+            Write("otadata", by_label["otadata"].offset, by_label["otadata"].size, args.otadata)
+        )
     for label, path in sorted(args_map.items()):
         part = by_label[label]
         size = require_file(path, label)

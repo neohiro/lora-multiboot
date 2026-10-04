@@ -12,9 +12,9 @@ of *truth* that happens to agree today. These assertions are what stop the copie
 from quietly becoming different answers, which is the failure that would write a
 partition table to a board that does not match its firmware.
 """
+
 from __future__ import annotations
 
-import json
 import pathlib
 import re
 import sys
@@ -26,8 +26,7 @@ QUADBOOT = ROOT / "firmware" / "partitions" / "quadboot.csv"
 MAIN_CPP = ROOT / "firmware" / "src" / "main.cpp"
 SLOT_LIFECYCLE = ROOT / "firmware" / "src" / "SlotLifecycle.cpp"
 
-_CONST = re.compile(
-    r"constexpr\s+std::uint32_t\s+(k\w+)\s*=\s*([^;]+);")
+_CONST = re.compile(r"constexpr\s+std::uint32_t\s+(k\w+)\s*=\s*([^;]+);")
 
 
 def geometry_constants() -> dict[str, int]:
@@ -38,8 +37,7 @@ def geometry_constants() -> dict[str, int]:
     kBootloaderSize does.
     """
     text = PROVISIONING.read_text(encoding="utf-8")
-    pending = [(m.group(1), m.group(2).split("//")[0].strip())
-               for m in _CONST.finditer(text)]
+    pending = [(m.group(1), m.group(2).split("//")[0].strip()) for m in _CONST.finditer(text)]
 
     out: dict[str, int] = {}
     # Loop rather than recurse: the header has no cycles, but a cycle should be a
@@ -62,7 +60,7 @@ def geometry_constants() -> dict[str, int]:
             if not names <= set(out):
                 still.append((name, expr))
                 continue
-            out[name] = int(eval(expr, {"__builtins__": {}}, dict(out)))  # noqa: S307
+            out[name] = int(eval(expr, {"__builtins__": {}}, dict(out)))
         if len(still) == len(pending):
             break  # nothing resolved this pass; a cycle
         pending = still
@@ -106,18 +104,28 @@ def string_literal_block(text: str, decl: str) -> str:
 class GeometryConstantsResolve(unittest.TestCase):
     def test_every_geometry_constant_is_readable(self):
         c = geometry_constants()
-        for name in ("kBootloaderOffset", "kPartitionTableOffset",
-                     "kPartitionTableSize", "kBootloaderSize", "kNvsOffset",
-                     "kNvsSize", "kOtadataOffset", "kOtadataSize",
-                     "kCoredumpOffset", "kCoredumpSize", "kFirstSlotOffset"):
+        for name in (
+            "kBootloaderOffset",
+            "kPartitionTableOffset",
+            "kPartitionTableSize",
+            "kBootloaderSize",
+            "kNvsOffset",
+            "kNvsSize",
+            "kOtadataOffset",
+            "kOtadataSize",
+            "kCoredumpOffset",
+            "kCoredumpSize",
+            "kFirstSlotOffset",
+        ):
             with self.subTest(constant=name):
                 self.assertIn(name, c)
                 self.assertIsInstance(c[name], int)
 
     def test_kBootloaderSize_is_derived_not_restated(self):
         c = geometry_constants()
-        self.assertEqual(c["kBootloaderSize"],
-                         c["kPartitionTableOffset"] - c["kPartitionTableSize"])
+        self.assertEqual(
+            c["kBootloaderSize"], c["kPartitionTableOffset"] - c["kPartitionTableSize"]
+        )
 
 
 class CompiledLayoutMatchesShippedTable(unittest.TestCase):
@@ -126,19 +134,19 @@ class CompiledLayoutMatchesShippedTable(unittest.TestCase):
     def setUp(self):
         self.c = geometry_constants()
         self.compiled = split_rows(
-            string_literal_block(MAIN_CPP.read_text(encoding="utf-8"),
-                                 "kCompiledLayout"))
+            string_literal_block(MAIN_CPP.read_text(encoding="utf-8"), "kCompiledLayout")
+        )
         self.shipped = split_rows(QUADBOOT.read_text(encoding="utf-8"))
 
     def test_kCompiledLayout_exists_at_all(self):
-        self.assertTrue(self.compiled,
-                        "kCompiledLayout not found; the node would report nothing")
+        self.assertTrue(self.compiled, "kCompiledLayout not found; the node would report nothing")
 
     def test_it_names_the_same_rows_in_the_same_order(self):
-        self.assertEqual([r[0] for r in self.compiled],
-                         [r[0] for r in self.shipped],
-                         "kCompiledLayout and quadboot.csv disagree about which "
-                         "partitions exist")
+        self.assertEqual(
+            [r[0] for r in self.compiled],
+            [r[0] for r in self.shipped],
+            "kCompiledLayout and quadboot.csv disagree about which partitions exist",
+        )
 
     def test_every_offset_and_size_matches(self):
         by_label = {r[0]: r for r in self.shipped}
@@ -158,9 +166,11 @@ class CompiledLayoutMatchesShippedTable(unittest.TestCase):
 
     def test_it_agrees_with_the_constants_on_the_system_region(self):
         by_label = {r[0]: r for r in self.compiled}
-        for label, off, size in (("nvs", "kNvsOffset", "kNvsSize"),
-                                 ("otadata", "kOtadataOffset", "kOtadataSize"),
-                                 ("coredump", "kCoredumpOffset", "kCoredumpSize")):
+        for label, off, size in (
+            ("nvs", "kNvsOffset", "kNvsSize"),
+            ("otadata", "kOtadataOffset", "kOtadataSize"),
+            ("coredump", "kCoredumpOffset", "kCoredumpSize"),
+        ):
             with self.subTest(label=label):
                 self.assertEqual(by_label[label][3], self.c[off])
                 self.assertEqual(by_label[label][4], self.c[size])
@@ -202,40 +212,52 @@ class ReclaimSystemRowsMatchConstants(unittest.TestCase):
         self.assertTrue(self.call, "the reclaim preamble is gone")
 
     def test_it_emits_three_rows(self):
-        self.assertEqual(self.call.count("0x%X"), 6,
-                         "three system rows, each with an offset and a size")
+        self.assertEqual(
+            self.call.count("0x%X"), 6, "three system rows, each with an offset and a size"
+        )
 
     def test_it_names_the_labels_and_subtypes_the_firmware_looks_up(self):
         literals = re.findall(r'"([^"]*)"', self.call)
         # Format lines aside, the arguments are label/subtype pairs in order.
         pairs = [x for x in literals if not x.startswith("%") and "\n" not in x]
-        self.assertEqual(pairs, ["nvs", "nvs", "otadata", "ota",
-                                 "coredump", "coredump"])
+        self.assertEqual(pairs, ["nvs", "nvs", "otadata", "ota", "coredump", "coredump"])
 
     def test_otadata_is_not_used_as_a_subtype(self):
         # 'otadata' is the partition's label. As a subtype it is not an ESP-IDF
         # keyword, and the real generator rejects it -- which is how this table was
         # found to be unbuildable in the first place.
         literals = re.findall(r'"([^"]*)"', self.call)
-        self.assertIn("otadata", literals)          # the label
+        self.assertIn("otadata", literals)  # the label
         self.assertNotIn("data, otadata,", self.call)
 
     def test_the_offsets_come_from_constants_not_literals(self):
         args = self.call.split('",', 1)[-1] if '",' in self.call else self.call
-        self.assertEqual(re.findall(r"0[xX][0-9a-fA-F]+", args), [],
-                         "the reclaim preamble restates an offset as a literal; it "
-                         "must format kNvsOffset/kOtadataOffset/kCoredumpOffset")
+        self.assertEqual(
+            re.findall(r"0[xX][0-9a-fA-F]+", args),
+            [],
+            "the reclaim preamble restates an offset as a literal; it "
+            "must format kNvsOffset/kOtadataOffset/kCoredumpOffset",
+        )
 
     def test_it_names_the_constants_it_formats_from(self):
-        for name in ("kNvsOffset", "kNvsSize", "kOtadataOffset", "kOtadataSize",
-                     "kCoredumpOffset", "kCoredumpSize"):
+        for name in (
+            "kNvsOffset",
+            "kNvsSize",
+            "kOtadataOffset",
+            "kOtadataSize",
+            "kCoredumpOffset",
+            "kCoredumpSize",
+        ):
             with self.subTest(constant=name):
                 self.assertIn(name, self.call)
 
     def test_it_includes_the_constants_header(self):
-        self.assertIn('#include "bridge/Provisioning.hpp"', self.text,
-                      "the reclaim path formats from Provisioning.hpp constants, so "
-                      "it must include them rather than hope they arrived")
+        self.assertIn(
+            '#include "bridge/Provisioning.hpp"',
+            self.text,
+            "the reclaim path formats from Provisioning.hpp constants, so "
+            "it must include them rather than hope they arrived",
+        )
 
     def test_it_rechecks_the_system_rows_after_rebuilding(self):
         # The rebuild is now checked for the system rows the way it always was for
@@ -249,17 +271,20 @@ class FlashToolGeometryMatchesConstants(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         sys.path.insert(0, str(ROOT / "tools"))
-        import flash  # noqa: PLC0415 - deliberately late; it is a script
+        import flash
+
         cls.flash = flash
         cls.c = geometry_constants()
 
     def test_implicit_pieces_are_the_constants(self):
         pieces = self.flash.system_pieces(QUADBOOT)
-        self.assertEqual(pieces["bootloader"],
-                         (self.c["kBootloaderOffset"], self.c["kBootloaderSize"]))
-        self.assertEqual(pieces["partition_tbl"],
-                         (self.c["kPartitionTableOffset"],
-                          self.c["kPartitionTableSize"]))
+        self.assertEqual(
+            pieces["bootloader"], (self.c["kBootloaderOffset"], self.c["kBootloaderSize"])
+        )
+        self.assertEqual(
+            pieces["partition_tbl"],
+            (self.c["kPartitionTableOffset"], self.c["kPartitionTableSize"]),
+        )
 
     def test_system_layer_ends_below_the_first_slot(self):
         pieces = self.flash.system_pieces(QUADBOOT)
@@ -269,9 +294,14 @@ class FlashToolGeometryMatchesConstants(unittest.TestCase):
     def test_the_shipped_tables_match_the_constants_exactly(self):
         for name in ("quadboot", "dualboot"):
             with self.subTest(table=name):
-                rows = {r[0]: r for r in
-                        split_rows((ROOT / "firmware" / "partitions"
-                                    / f"{name}.csv").read_text(encoding="utf-8"))}
+                rows = {
+                    r[0]: r
+                    for r in split_rows(
+                        (ROOT / "firmware" / "partitions" / f"{name}.csv").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                }
                 self.assertEqual(rows["nvs"][3], self.c["kNvsOffset"])
                 self.assertEqual(rows["nvs"][4], self.c["kNvsSize"])
                 self.assertEqual(rows["otadata"][3], self.c["kOtadataOffset"])

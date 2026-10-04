@@ -56,8 +56,10 @@ class GeometryConstants(unittest.TestCase):
         # reader that stops at the first constant it cannot parse reports it missing
         # and either guesses or gives up.
         consts = flash.read_geometry_constants()
-        self.assertEqual(consts["kBootloaderSize"],
-                         consts["kPartitionTableOffset"] - consts["kPartitionTableSize"])
+        self.assertEqual(
+            consts["kBootloaderSize"],
+            consts["kPartitionTableOffset"] - consts["kPartitionTableSize"],
+        )
 
     def test_hex_literals_are_not_mistaken_for_names(self):
         # "0x0" contains the identifier-shaped text "x0". Treating that as an
@@ -85,10 +87,10 @@ class GeometryConstants(unittest.TestCase):
     def test_system_pieces_come_from_the_header(self):
         pieces = flash.system_pieces(PARTITION_DIR / "quadboot.csv")
         c = flash.read_geometry_constants()
-        self.assertEqual(pieces["bootloader"],
-                         (c["kBootloaderOffset"], c["kBootloaderSize"]))
-        self.assertEqual(pieces["partition_tbl"],
-                         (c["kPartitionTableOffset"], c["kPartitionTableSize"]))
+        self.assertEqual(pieces["bootloader"], (c["kBootloaderOffset"], c["kBootloaderSize"]))
+        self.assertEqual(
+            pieces["partition_tbl"], (c["kPartitionTableOffset"], c["kPartitionTableSize"])
+        )
 
 
 class InputValidationHappensBeforeAnythingIsErased(unittest.TestCase):
@@ -126,31 +128,53 @@ class InputValidationHappensBeforeAnythingIsErased(unittest.TestCase):
             p = Path(td) / "big.bin"
             p.write_bytes(b"\x00" * 4096)
             self.assertGreater(
-                flash.require_file(p, "ota_0"), 0,
-                "the size check needs the real size, which is what this guards")
+                flash.require_file(p, "ota_0"),
+                0,
+                "the size check needs the real size, which is what this guards",
+            )
 
     def test_update_system_refuses_a_missing_bootloader(self):
         # End to end through main(), because the point is the exit code and the
         # message an operator sees, not an internal exception.
         import subprocess
         import sys
+
         rc = subprocess.run(
-            [sys.executable, str(ROOT / "tools" / "flash.py"), "--dry-run",
-             "update-system", "--bootloader", "definitely_missing.bin"],
-            cwd=ROOT, capture_output=True, text=True)
+            [
+                sys.executable,
+                str(ROOT / "tools" / "flash.py"),
+                "--dry-run",
+                "update-system",
+                "--bootloader",
+                "definitely_missing.bin",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(rc.returncode, 2, rc.stdout + rc.stderr)
         combined = rc.stdout + rc.stderr
         self.assertIn("no such file", combined)
-        self.assertNotIn("Traceback", combined,
-                         "a typo in a path must not produce a stack trace")
+        self.assertNotIn("Traceback", combined, "a typo in a path must not produce a stack trace")
 
     def test_app_refuses_a_missing_image_without_a_traceback(self):
         import subprocess
         import sys
+
         rc = subprocess.run(
-            [sys.executable, str(ROOT / "tools" / "flash.py"), "--dry-run",
-             "app", "2", "--app", "definitely_missing.bin"],
-            cwd=ROOT, capture_output=True, text=True)
+            [
+                sys.executable,
+                str(ROOT / "tools" / "flash.py"),
+                "--dry-run",
+                "app",
+                "2",
+                "--app",
+                "definitely_missing.bin",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(rc.returncode, 2, rc.stdout + rc.stderr)
         combined = rc.stdout + rc.stderr
         self.assertIn("no such file", combined)
@@ -256,8 +280,8 @@ class Rejections(unittest.TestCase):
         self.assertIn("past", str(cm.exception))
 
     def test_swapped_filesystem_subtypes_are_refused(self):
-    # Distinct offsets, so geometry is happy -- but the pairing is backwards.
-    # Each firmware would then mount and format the other's filesystem.
+        # Distinct offsets, so geometry is happy -- but the pairing is backwards.
+        # Each firmware would then mount and format the other's filesystem.
         csv = (
             "fs_meshcore,   data, littlefs, 0x10000, 0x100000,\n"
             "fs_meshtastic, data, spiffs,   0x110000, 0x100000,\n"
@@ -295,7 +319,8 @@ class SystemLayer(unittest.TestCase):
             first_slot = min(p.offset for p in parts if p.label.startswith("ota_"))
             for label, (offset, size) in pieces.items():
                 self.assertLessEqual(
-                    offset + size, first_slot,
+                    offset + size,
+                    first_slot,
                     f"{name}: {label} runs past the first slot",
                 )
 
@@ -353,7 +378,8 @@ class EsptoolInvocation(unittest.TestCase):
         real_size = flash.chip_flash_size
         try:
             flash.shutil.which = lambda name, *a, **k: (
-                "C:/fake/esptool" if name == "esptool" else real_which(name, *a, **k))
+                "C:/fake/esptool" if name == "esptool" else real_which(name, *a, **k)
+            )
             flash.find_port = lambda explicit=None: "COM7"
             flash.chip_flash_size = lambda port: 16 * 1024 * 1024
 
@@ -372,8 +398,7 @@ class EsptoolInvocation(unittest.TestCase):
             flash.chip_flash_size = real_size
 
     def test_erase_uses_erase_region_not_write_flash(self):
-        rc, calls = self._capture(
-            [flash.Write("ota_1", 0x330000, 0x200000, None)])
+        rc, calls = self._capture([flash.Write("ota_1", 0x330000, 0x200000, None)])
         self.assertEqual(rc, 0)
         self.assertEqual(len(calls), 1)
         cmd = calls[0]
@@ -392,8 +417,7 @@ class EsptoolInvocation(unittest.TestCase):
         f.close()
         self.addCleanup(lambda: P(f.name).unlink(missing_ok=True))
 
-        rc, calls = self._capture(
-            [flash.Write("ota_0", 0x30000, 0x200000, P(f.name))])
+        rc, calls = self._capture([flash.Write("ota_0", 0x30000, 0x200000, P(f.name))])
         self.assertEqual(rc, 0)
         self.assertIn("write_flash", calls[0])
         self.assertIn("0x30000", calls[0])
@@ -407,10 +431,12 @@ class EsptoolInvocation(unittest.TestCase):
         f.close()
         self.addCleanup(lambda: P(f.name).unlink(missing_ok=True))
 
-        rc, calls = self._capture([
-            flash.Write("ota_1", 0x330000, 0x200000, P(f.name)),
-            flash.Write("ota_0", 0x30000, 0x200000, None),
-        ])
+        rc, calls = self._capture(
+            [
+                flash.Write("ota_1", 0x330000, 0x200000, P(f.name)),
+                flash.Write("ota_0", 0x30000, 0x200000, None),
+            ]
+        )
         self.assertEqual(rc, 0)
         self.assertEqual(len(calls), 2)
         # A region must be erased before anything is written into the chip, or the
@@ -444,8 +470,19 @@ class EspIdfSubtypeNames(unittest.TestCase):
     # ota_0..ota_15, test. data: ota, phy, nvs, coredump, nvs_keys, efuse,
     # undefined, esphttpd, fat, spiffs, littlefs.
     APP_SUBTYPES = {"factory", "test"} | {f"ota_{i}" for i in range(16)}
-    DATA_SUBTYPES = {"ota", "phy", "nvs", "coredump", "nvs_keys", "efuse",
-                     "undefined", "esphttpd", "fat", "spiffs", "littlefs"}
+    DATA_SUBTYPES = {
+        "ota",
+        "phy",
+        "nvs",
+        "coredump",
+        "nvs_keys",
+        "efuse",
+        "undefined",
+        "esphttpd",
+        "fat",
+        "spiffs",
+        "littlefs",
+    }
 
     def _rows(self, name):
         return flash.parse_csv(PARTITION_DIR / f"{name}.csv")
@@ -456,10 +493,12 @@ class EspIdfSubtypeNames(unittest.TestCase):
                 allowed = self.APP_SUBTYPES if p.ptype == "app" else self.DATA_SUBTYPES
                 with self.subTest(table=name, label=p.label):
                     self.assertIn(
-                        p.subtype, allowed,
+                        p.subtype,
+                        allowed,
                         f"{name}: subtype {p.subtype!r} on {p.label!r} is not an "
                         f"ESP-IDF {p.ptype} subtype name; gen_esp32_partitions.py "
-                        f"will reject it")
+                        f"will reject it",
+                    )
 
     def test_otadata_row_uses_the_ota_subtype(self):
         # The label is "otadata" everywhere in the ecosystem; the subtype is "ota".
@@ -485,9 +524,11 @@ class EspIdfSubtypeNames(unittest.TestCase):
             with self.subTest(table=name):
                 for p in self._rows(name):
                     self.assertGreaterEqual(
-                        p.offset, 0x9000,
+                        p.offset,
+                        0x9000,
                         f"{name}: {p.label} at 0x{p.offset:X} is below the floor "
-                        f"ESP-IDF enforces (0x8000 table + 0x1000)")
+                        f"ESP-IDF enforces (0x8000 table + 0x1000)",
+                    )
                 self.assertNotIn("partition_tbl", {p.label for p in self._rows(name)})
                 self.assertNotIn("bootloader", {p.label for p in self._rows(name)})
 

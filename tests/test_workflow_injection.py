@@ -8,13 +8,13 @@ A regression here means upstream prose can execute as shell in a job holding
 contents:write. So this is a test, not a one-off: it lives in tests/ and runs in
 the gate.
 """
+
 import os
 import pathlib
 import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -25,15 +25,11 @@ MARKERS = ("pwned_by_upstream", "pwned_semicolon", "pwned_backtick")
 HOSTILE_REPORTS = {
     # An apostrophe in the MeshCore region text, which the FAQ parser copies
     # verbatim out of upstream prose.
-    "apostrophe only":
-        "DRIFT  meshcore: CHANGED 'Bob's preset' : 910.525 -> 915.0",
+    "apostrophe only": "DRIFT  meshcore: CHANGED 'Bob's preset' : 910.525 -> 915.0",
     # What an apostrophe buys an attacker once the quoting breaks.
-    "apostrophe then substitution":
-        "DRIFT  meshcore: CHANGED '$(touch pwned_by_upstream)' preset : 915.0",
-    "apostrophe then command chain":
-        "DRIFT  x: CHANGED 'y'; touch pwned_semicolon : 915.0",
-    "apostrophe then backtick":
-        "DRIFT  x: CHANGED '`touch pwned_backtick`' : 915.0",
+    "apostrophe then substitution": "DRIFT  meshcore: CHANGED '$(touch pwned_by_upstream)' preset : 915.0",
+    "apostrophe then command chain": "DRIFT  x: CHANGED 'y'; touch pwned_semicolon : 915.0",
+    "apostrophe then backtick": "DRIFT  x: CHANGED '`touch pwned_backtick`' : 915.0",
 }
 
 
@@ -58,8 +54,9 @@ def _step_script() -> str:
     text = WORKFLOW.read_text(encoding="utf-8")
     m = re.search(r"- name: Open the pull request.*?run: \|\n(.*?)\n\n      - name:", text, re.S)
     assert m, "the pull request step was renamed or removed; update this test"
-    return "\n".join(line[10:] if line.startswith(" " * 10) else line
-                     for line in m.group(1).splitlines())
+    return "\n".join(
+        line[10:] if line.startswith(" " * 10) else line for line in m.group(1).splitlines()
+    )
 
 
 @unittest.skipIf(BASH is None, "no POSIX shell available to run the step")
@@ -74,8 +71,9 @@ class NoScriptInjectionFromUpstreamReport(unittest.TestCase):
         bindir.mkdir()
         for name in ("git", "gh"):
             p = bindir / name
-            p.write_text(f'#!/bin/sh\necho "[stub {name} $*]"\nexit 0\n',
-                         encoding="utf-8", newline="\n")
+            p.write_text(
+                f'#!/bin/sh\necho "[stub {name} $*]"\nexit 0\n', encoding="utf-8", newline="\n"
+            )
             p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         self.env = dict(os.environ)
         # Supplied the way Actions supplies step-level `env:`, not spliced into the
@@ -96,8 +94,9 @@ class NoScriptInjectionFromUpstreamReport(unittest.TestCase):
         step = self.tmp / "step.sh"
         step.write_text(script, encoding="utf-8", newline="\n")
         self.env["DRIFT_REPORT"] = report
-        res = subprocess.run([BASH, str(step)], capture_output=True, text=True,
-                             cwd=str(self.tmp), env=self.env)
+        res = subprocess.run(
+            [BASH, str(step)], capture_output=True, text=True, cwd=str(self.tmp), env=self.env
+        )
         fired = [m for m in MARKERS if (self.tmp / m).exists()]
         for m in fired:
             (self.tmp / m).unlink()
@@ -107,9 +106,7 @@ class NoScriptInjectionFromUpstreamReport(unittest.TestCase):
         for name, report in HOSTILE_REPORTS.items():
             with self.subTest(report=name):
                 res, fired = self._run(report)
-                self.assertEqual(
-                    fired, [],
-                    f"upstream prose executed as a shell command: {fired}")
+                self.assertEqual(fired, [], f"upstream prose executed as a shell command: {fired}")
 
     def test_the_report_still_reaches_the_pull_request(self):
         # Closing the hole must not mean dropping the report. If the body quietly
@@ -119,9 +116,11 @@ class NoScriptInjectionFromUpstreamReport(unittest.TestCase):
         body = self.tmp / "pr-body.md"
         self.assertTrue(body.is_file(), "the pull request body was not written")
         text = body.read_text(encoding="utf-8")
-        self.assertIn("Bob's preset", text,
-                      "the report is missing from the body; the quoting fix must "
-                      "not have dropped it")
+        self.assertIn(
+            "Bob's preset",
+            text,
+            "the report is missing from the body; the quoting fix must not have dropped it",
+        )
         self.assertIn("v0.2.0", text)
         self.assertIn("v0.1.0", text)
 
@@ -129,13 +128,16 @@ class NoScriptInjectionFromUpstreamReport(unittest.TestCase):
         # The structural property behind the fix: the value is passed through the
         # environment, so no line of the script contains it.
         script = _step_script()
-        self.assertNotIn("${{ needs.check.outputs.report }}", script,
-                         "the report is still spliced into the script")
-        self.assertIn("DRIFT_REPORT", script,
-                      "the body should be built from the environment variable")
+        self.assertNotIn(
+            "${{ needs.check.outputs.report }}",
+            script,
+            "the report is still spliced into the script",
+        )
+        self.assertIn(
+            "DRIFT_REPORT", script, "the body should be built from the environment variable"
+        )
         self.assertIn('"$DRIFT_REPORT"', script)
-        self.assertIn("--body-file", script,
-                      "the body belongs in a file, not a shell argument")
+        self.assertIn("--body-file", script, "the body belongs in a file, not a shell argument")
 
 
 @unittest.skipIf(BASH is None, "no POSIX shell available")
@@ -147,13 +149,19 @@ class ReportIsNotSplicedIntoGithubScript(unittest.TestCase):
         self.text = WORKFLOW.read_text(encoding="utf-8")
 
     def test_github_script_blocks_read_the_report_from_the_environment(self):
-        self.assertNotIn("'${{ needs.check.outputs.report }}'", self.text,
-                         "the report is still spliced into a github-script body")
-        self.assertNotIn('`${{ needs.check.outputs.report }}`', self.text)
+        self.assertNotIn(
+            "'${{ needs.check.outputs.report }}'",
+            self.text,
+            "the report is still spliced into a github-script body",
+        )
+        self.assertNotIn("`${{ needs.check.outputs.report }}`", self.text)
         self.assertIn("process.env.DRIFT_REPORT", self.text)
         # Every DRIFT_REPORT reference that reaches a script body must be env-fed.
-        self.assertEqual(self.text.count("DRIFT_REPORT: ${{"), 3,
-                         "the three places that use the report should each declare it")
+        self.assertEqual(
+            self.text.count("DRIFT_REPORT: ${{"),
+            3,
+            "the three places that use the report should each declare it",
+        )
 
 
 if __name__ == "__main__":
