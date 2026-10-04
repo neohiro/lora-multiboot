@@ -327,6 +327,108 @@ drift and the side to retune, at boot, before anything transmits.
 None of this is legal advice, and no firmware can certify an arbitrary board,
 amplifier, antenna or installation. [`docs/RF-PLAN.md`](docs/RF-PLAN.md)
 
+## Vanity & Functional Keypair Mining
+
+<p align="center">
+  <img alt="mining" src="https://img.shields.io/badge/mining-Ed25519%20prefix%20%2B%20suffix-7c4dff">
+  <img alt="meshtastic" src="https://img.shields.io/badge/Meshtastic-PSK%20%2B%20node%20ID-00b0d9">
+  <img alt="offline" src="https://img.shields.io/badge/mining-100%25%20in--browser-2ea043">
+</p>
+
+A board that runs both stacks side by side is a board where both stacks will
+eventually want an identity you can read from across a room — a callsign on a
+repeater's OLED, a `!` ID dictated over VHF, a MeshCore node name read out during
+a build session. None of those identities are designed. They are random bytes out
+of a CSPRNG, and mining is the one case where brute force is the right answer: pay
+for the search once, and every later contact with the node is cheaper.
+
+[**meshcore-vanity-key**](https://neohiro.github.io/meshcore-meshtastic-vanity-key/) does
+that. It mines Ed25519 keypairs until the encoded public key matches a pattern,
+entirely in the browser — Web Workers plus libsodium WASM, no network round-trip,
+no telemetry, working offline once loaded.
+
+### Vanity and functional are two different goals
+
+| | Vanity | Functional |
+|---|---|---|
+| **Why** | the identity reads well and is memorable | the identity is *checkable* by a human under bad conditions |
+| **Typical target** | `mc1qneohiro…`, `!a1b2c3…` | a prefix **and** a suffix, so a half-transcribed key fails loudly |
+| **Cost** | `16ⁿ` attempts for `n` hex characters — 4 is instant, 6 is minutes | that, squared: each constrained end multiplies rather than adds |
+| **Classic mistake** | asking for 9+ characters. That is a lottery ticket, not a mnemonic | mining a *reserved* prefix and then wondering why the client refuses the key |
+
+Same code path, same flags. The distinction only matters when deciding what to ask
+for — and in both cases the pattern is matched against the **encoded public key**,
+never the private one, which never leaves your machine.
+
+### Meshtastic prefix and suffix mining
+
+Meshtastic has two unrelated things people both call "the key", and they are mined
+by two unrelated means. Conflating them is the usual first mistake.
+
+**Channel PSK — symmetric, minable directly.** A channel is a name plus a
+pre-shared key written `base64:…`. `AQ==` is the single byte `0x01` and is the
+well-known default on every device — not a secret. `Ag==`–`Cg==` are the
+`simple1`–`simple9` shorthands. A private channel is 16 bytes (AES-128) or 32 bytes
+(AES-256). A PSK is raw key material rather than a signing key, so there is no
+keypair to derive — the bytes *are* the key, which makes a vanity PSK a genuinely
+**functional** target rather than a decoration. `--encoding base64` mines exactly
+this form:
+
+```bash
+# browser: neohiro.github.io/meshcore-meshtastic-vanity-key — prefix box, suffix box, go
+meshcore-vanity NHI --encoding base64              # channel key starting "NHI…"
+meshcore-vanity NHI --encoding base64 --suffix 0   # …and ending "…0"
+meshcore-vanity --encoding base64 --suffix qw      # suffix only
+meshcore-vanity mc1qneohiro --encoding bech32      # MeshCore name, prefix form
+```
+
+Memorable here means **transcribable**. A group reads a PSK out over an FM handheld
+before anybody has a phone paired, and a key with recognisable ends survives that
+round trip when a bare 24-character base64 blob does not. Note that base64's last
+character is constrained, so a base64 suffix has to end in one of
+`048AEIMQUYcgkosw`.
+
+**Node key and `!` user ID — a different curve, and one more derivation.** A
+Meshtastic node's key is **Curve25519**, not Ed25519, and the `!` + hex ID the
+firmware advertises is a *further* derivation from that node key — since firmware
+2.8, from the public-key identity rather than from a hardware MAC address, which is
+what lets a node keep its identity across a factory reset. Two separate things
+therefore have to line up:
+
+```
+   seed ─▶ Curve25519 node key ─▶ firmware derivation ─▶ !a1b2c3d4
+            ▲ the keypair                              ▲ what you read out of the UI
+              that matters
+```
+
+The trap worth naming is the curve. `--encoding hex` chooses how a key is
+*printed*; it does not choose which key it is. On the default Ed25519 derivation
+you get a valid MeshCore device key and **not** a Meshtastic node key, and the
+node will simply refuse the import — which reads like a firmware bug and is not
+one. Meshtastic node-key mining is a different algorithm, not a different
+encoding.
+
+Which leaves the `!` ID itself, and three things worth knowing before spending an
+afternoon on it:
+
+- It is fixed width, so there is no short form to ask for. `!a1b2c3d4` is four
+  bytes of derivation and nothing truncates it away.
+- An ID pattern is **not** a key pattern. Constraining `!a1b2c3d4` constrains a
+  derivation *of* the key, not the key, so the search is no cheaper than mining
+  the key and usually dearer.
+- Node keys are TOFU-bound: the first public key a node hears for a given node
+  number is the one it keeps. Change a key after it has been seen and peers treat
+  you as a stranger who replaced somebody.
+
+### One caveat, stated plainly
+
+Every device in this family generates its own key on first boot, and **nothing
+here changes the identity a shipped firmware hands you**. Mining is for a node you
+are deliberately provisioning: a fresh key imported over USB, a companion client,
+or a factory-reset device whose identity you are re-establishing anyway. If a node
+already has an identity, mine a *new* one and swap it in deliberately. Never
+overwrite a key that peers already hold.
+
 ## Layout
 
 ```
