@@ -2,6 +2,7 @@
 
 #include "bridge/SlotLifecycle.hpp"
 
+#include "bridge/Provisioning.hpp"
 
 #include <cstdio>
 
@@ -338,12 +339,26 @@ ReclaimResult reclaimSlot(const SlotTable& table, const DeviceState& state,
   // staging partition. Every other slot's rows are emitted unchanged, which is the
   // whole safety argument: there is no arithmetic here that could move anything.
   //
-  // The bootloader and partition table are not rows -- ESP-IDF's generator rejects
-  // any declared partition below 0x9000 -- so they are not emitted here either.
-  std::string csv =
-      "nvs,            data, nvs,     0x9000,  0xA000,\n"
-      "otadata,        data, ota,     0x13000, 0x2000,\n"
-      "coredump,       data, coredump,0x15000, 0x10000,\n";
+  // The system rows come from the same constants Provisioning.hpp owns, not from
+  // literals written out here. Restating them meant a moved system region produced
+  // a reclaimed table that disagreed with the shipped layout and with every other
+  // subsystem -- a table that parsed, validated, and was wrong.
+  //
+  // The bootloader and partition table are absent for a different reason: ESP-IDF's
+  // generator rejects any declared partition below 0x9000, so they are not rows at
+  // all. SystemUpdate knows their geometry as constants.
+  std::string csv;
+  {
+    char sys[160];
+    std::snprintf(sys, sizeof(sys),
+                  "%-14s, data, %-9s, 0x%X, 0x%X,\n"
+                  "%-14s, data, %-9s, 0x%X, 0x%X,\n"
+                  "%-14s, data, %-9s, 0x%X, 0x%X,\n",
+                  "nvs", "nvs", kNvsOffset, kNvsSize,
+                  "otadata", "ota", kOtadataOffset, kOtadataSize,
+                  "coredump", "coredump", kCoredumpOffset, kCoredumpSize);
+    csv += sys;
+  }
 
   for (std::uint8_t i = 0; i < declared; ++i) {
     if (i == index) continue;  // the hole
@@ -398,6 +413,20 @@ ReclaimResult reclaimSlot(const SlotTable& table, const DeviceState& state,
     if (before == nullptr || after == nullptr || before->offset != after->offset ||
         before->size != after->size) {
       return refuse("rebuilding would relocate a surviving slot");
+    }
+  }
+
+  // The same argument for the system region. This used to be taken on trust: the
+  // rows were written as literals above, nothing compared them to what came in,
+  // and a mismatch here is a node whose settings partition has quietly moved.
+  for (std::uint8_t s = 0; s < 3; ++s) {
+    const char* label = s == 0 ? "nvs" : (s == 1 ? "otadata" : "coredump");
+    const Partition* before = table.find(label);
+    const Partition* after = rebuilt.find(label);
+    if (before == nullptr) continue;  // not in the input table; nothing to preserve
+    if (after == nullptr || before->offset != after->offset ||
+        before->size != after->size) {
+      return refuse("rebuilding would move a system partition");
     }
   }
 

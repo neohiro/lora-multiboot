@@ -45,6 +45,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -59,6 +60,10 @@ EXIT_UNDETERMINABLE = 4
 
 FETCH_TIMEOUT = 30
 
+# One retry, one pause. Long enough to ride out a rate limit, short enough that a
+# genuinely missing source still fails inside the workflow's timeout.
+RETRY_BACKOFF_SECONDS = 2.0
+
 
 class Undeterminable(RuntimeError):
     """A source could not be fetched or parsed.
@@ -68,13 +73,33 @@ class Undeterminable(RuntimeError):
     """
 
 
-def fetch(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "lora-multiboot-drift/1"})
-    try:
-        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise Undeterminable(f"could not fetch {url}: {exc}") from exc
+def fetch(url: str, attempts: int = 2) -> str:
+    """Fetch a source, retrying once.
+
+    One retry, not several: a rate limit or a DNS hiccup is common enough that a
+    single attempt turns a working monitor into one that files an issue every time
+    it runs, and a monitor that cries wolf weekly is a monitor people stop
+    reading. But hammering a URL that is genuinely gone is pointless, so this is
+    a single retry and no more -- after that the honest answer is "cannot see".
+
+    Retrying is only safe because a failed fetch is never recorded as a change: the
+    result is either real content or Undeterminable, and Undeterminable never
+    rewrites the expectations file.
+    """
+    last: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "lora-multiboot-drift/1"})
+        try:
+            with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            last = exc
+            if attempt + 1 < max(1, attempts):
+                time.sleep(RETRY_BACKOFF_SECONDS)
+    assert last is not None
+    raise Undeterminable(
+        f"could not fetch {url} after {attempts} attempts: {last}") from last
 
 
 # --- Meshtastic --------------------------------------------------------------

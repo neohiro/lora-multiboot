@@ -210,6 +210,53 @@ void suite_reclaim() {
     CHECK_MSG(!s.isProvisioned(4), "the reserve is still free");
     CHECK_MSG(bootloaderAlwaysReachable(r.table), "and the bootloader is still there");
   }
+
+  // --- a reclaim preserves the system region byte for byte ------------------
+  //
+  // The reclaim rebuilds the table from scratch, so the system rows in the rebuilt
+  // table are the only record of where NVS, otadata and coredump live. They used to
+  // be written out as literals that nothing compared to what came in: a mismatch
+  // would have produced a table that parsed, validated, and was wrong about where
+  // the settings live.
+
+  {
+    const SlotTable t = board(5);
+    const ReclaimResult r = reclaimSlot(t, withFirmware(2), 2);
+    REQUIRE(r.ok);
+
+    static const char* kSystem[] = {"nvs", "otadata", "coredump"};
+    for (std::size_t i = 0; i < sizeof(kSystem) / sizeof(kSystem[0]); ++i) {
+      const Partition* before = t.find(kSystem[i]);
+      const Partition* after = r.table.find(kSystem[i]);
+      CHECK_MSG(before != nullptr && after != nullptr,
+                std::string("the reclaim kept the ") + kSystem[i] + " row");
+      CHECK_MSG(before->offset == after->offset,
+                std::string("a reclaim moved ") + kSystem[i]);
+      CHECK_MSG(before->size == after->size,
+                std::string("a reclaim resized ") + kSystem[i]);
+    }
+  }
+
+  // The rebuilt table must still place the system region below the first slot, and
+  // the reclaimed slot's space must be exactly the app plus its filesystem.
+  {
+    const SlotTable t = board(5);
+    const ReclaimResult r = reclaimSlot(t, withFirmware(2), 2);
+    REQUIRE(r.ok);
+
+    const Partition* stage = r.table.find(kOtaStagingLabel);
+    REQUIRE(stage != nullptr);
+
+    const Partition* app = t.find("ota_2");
+    const Partition* fs = t.find("fs_reticulum");
+    REQUIRE(app != nullptr);
+    REQUIRE(fs != nullptr);
+    CHECK_MSG(stage->offset == app->offset, "the staging region starts where the app was");
+    CHECK_MSG(stage->size == (fs->offset + fs->size) - app->offset,
+              "and is exactly the app plus its settings, nothing more");
+    CHECK_MSG(stage->subType == PartSubType::Undefined,
+              "and claims no filesystem, because nothing mounts it");
+  }
 }
 
 void suite_radio_profiles() {

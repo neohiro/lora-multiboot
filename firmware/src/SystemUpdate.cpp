@@ -152,10 +152,19 @@ UpdatePlan planSystemUpdate(const SlotTable& table, const std::vector<SystemImag
 }
 
 std::string describeUpdate(const UpdatePlan& plan) {
-  char buf[160];
+  // Sized so that a plan listing every piece at a realistic width fits whole, with
+  // room to spare. The buffer is not the safety property; the ellipsis below is.
+  char buf[224];
   std::size_t i = 0;
+  bool dropped = false;
   const auto put = [&](const char* s) {
-    while (*s != '\0' && i + 1 < sizeof(buf)) buf[i++] = *s++;
+    while (*s != '\0') {
+      if (i + 1 >= sizeof(buf)) {
+        dropped = true;
+        return;
+      }
+      buf[i++] = *s++;
+    }
   };
   const auto putU = [&](std::uint32_t v) {
     char tmp[12];
@@ -164,7 +173,13 @@ std::string describeUpdate(const UpdatePlan& plan) {
       tmp[n++] = static_cast<char>('0' + (v % 10u));
       v /= 10u;
     } while (v != 0u);
-    while (n > 0 && i + 1 < sizeof(buf)) buf[i++] = tmp[--n];
+    while (n > 0) {
+      if (i + 1 >= sizeof(buf)) {
+        dropped = true;
+        return;
+      }
+      buf[i++] = tmp[--n];
+    }
   };
 
   put("system update:");
@@ -184,6 +199,27 @@ std::string describeUpdate(const UpdatePlan& plan) {
   if (plan.partitionTableUnchanged) put(" (partition table unchanged, skipped)");
   // The safety claim, made visible to whoever is about to flash.
   put("; slots and settings untouched");
+
+  // A plan that was cut short must say so, rather than ending mid-word and reading
+  // as a complete statement. This tail is the part saying what was NOT touched,
+  // which is the part an operator most needs to see in full.
+  //
+  // Not reachable through the public API: an image is only planned if it fits its
+  // partition, and partitions are bounded by the flash size, so the text cannot
+  // exceed the buffer. This is here because that reasoning depends on three places
+  // agreeing (this buffer, the partition sizes, and the label strings), and the day
+  // one of them moves, a silent truncation is the failure nobody would notice --
+  // unlike a build break.
+  if (dropped) {
+    // Rewind over whatever fitted, then reserve room for the marker.
+    while (i > 0 && buf[i - 1] == ' ') --i;
+    if (i + 4 <= sizeof(buf)) {
+      buf[i++] = ' ';
+      buf[i++] = '.';
+      buf[i++] = '.';
+      buf[i++] = '.';
+    }
+  }
   buf[i] = '\0';
   return std::string(buf);
 }

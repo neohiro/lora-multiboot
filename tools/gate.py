@@ -175,6 +175,7 @@ def compile_and_run(verbose: bool) -> int:
 PY_TEST_FILES = [
     "tests/test_flash_tool.py",
     "tests/test_rf_drift.py",
+    "tests/test_geometry_agreement.py",
 ]
 
 # Scripts that must exit zero, run as-is.

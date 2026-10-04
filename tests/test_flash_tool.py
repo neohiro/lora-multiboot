@@ -30,6 +30,66 @@ FLASH_16MB = 16 * 1024 * 1024
 PARTITION_DIR = ROOT / "firmware" / "partitions"
 
 
+class GeometryConstants(unittest.TestCase):
+    """flash.py follows Provisioning.hpp for the offsets it writes to a board.
+
+    The failure these prevent is not a wrong number in a report; it is a wrong
+    number written to flash, where a bootloader of the wrong length either bricks
+    the node or silently fails to update.
+    """
+
+    def setUp(self):
+        self.saved = flash.PROVISIONING
+
+    def tearDown(self):
+        flash.PROVISIONING = self.saved
+
+    def test_reads_the_real_header(self):
+        consts = flash.read_geometry_constants()
+        self.assertEqual(consts["kPartitionTableOffset"], 0x8000)
+        self.assertEqual(consts["kPartitionTableSize"], 0x1000)
+        self.assertEqual(consts["kBootloaderSize"], 0x7000)
+
+    def test_derived_constants_resolve(self):
+        # kBootloaderSize is written in terms of kPartitionTableOffset, so a naive
+        # reader that stops at the first constant it cannot parse reports it missing
+        # and either guesses or gives up.
+        consts = flash.read_geometry_constants()
+        self.assertEqual(consts["kBootloaderSize"],
+                         consts["kPartitionTableOffset"] - consts["kPartitionTableSize"])
+
+    def test_hex_literals_are_not_mistaken_for_names(self):
+        # "0x0" contains the identifier-shaped text "x0". Treating that as an
+        # undeclared name makes every hex constant look unresolvable.
+        consts = flash.read_geometry_constants()
+        self.assertIn("kBootloaderOffset", consts)
+        self.assertEqual(consts["kBootloaderOffset"], 0)
+
+    def test_a_missing_header_is_a_flash_error_not_a_traceback(self):
+        flash.PROVISIONING = PARTITION_DIR.parent / "include" / "bridge" / "nope.hpp"
+        with self.assertRaises(flash.FlashError) as cm:
+            flash.system_pieces(PARTITION_DIR / "quadboot.csv")
+        msg = str(cm.exception)
+        self.assertIn("owns the flash geometry", msg)
+        self.assertNotIn("Traceback", msg)
+
+    def test_an_undeclared_constant_names_itself(self):
+        with self.assertRaises(flash.FlashError) as cm:
+            flash.geometry_constant("kNoSuchConstant")
+        msg = str(cm.exception)
+        self.assertIn("kNoSuchConstant", msg)
+        # And it must list what it did find, so the fix is obvious.
+        self.assertIn("kNvsOffset", msg)
+
+    def test_system_pieces_come_from_the_header(self):
+        pieces = flash.system_pieces(PARTITION_DIR / "quadboot.csv")
+        c = flash.read_geometry_constants()
+        self.assertEqual(pieces["bootloader"],
+                         (c["kBootloaderOffset"], c["kBootloaderSize"]))
+        self.assertEqual(pieces["partition_tbl"],
+                         (c["kPartitionTableOffset"], c["kPartitionTableSize"]))
+
+
 class ParseSize(unittest.TestCase):
     def test_units(self):
         self.assertEqual(flash.parse_size("0x10000"), 0x10000)

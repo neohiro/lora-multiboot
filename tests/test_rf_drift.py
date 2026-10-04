@@ -14,11 +14,14 @@ failing test.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import pathlib
 import sys
 import tempfile
 import unittest
+import unittest.mock
+import urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -363,6 +366,56 @@ class WritePath(unittest.TestCase):
                 rf.EXPECTATIONS = saved
             self.assertFalse(wrote)
             self.assertEqual(json.loads(exp.read_text(encoding="utf-8")), original)
+
+
+class FetchRetries(unittest.TestCase):
+    """A monitor that cries wolf every week is a monitor nobody reads."""
+
+    def test_a_transient_failure_is_retried_and_then_succeeds(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            if len(calls) == 1:
+                raise urllib.error.URLError("temporary failure in name resolution")
+            return io.BytesIO(b"content")
+
+        with unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen), \
+             unittest.mock.patch.object(rf.time, "sleep", lambda _s: None):
+            self.assertEqual(rf.fetch("https://example.invalid/x"), "content")
+        self.assertEqual(len(calls), 2, "the first failure must be retried once")
+
+    def test_a_persistent_failure_reports_undeterminable_not_success(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            raise urllib.error.URLError("404")
+
+        with unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen), \
+             unittest.mock.patch.object(rf.time, "sleep", lambda _s: None):
+            with self.assertRaises(rf.Undeterminable) as cm:
+                rf.fetch("https://example.invalid/x")
+        self.assertEqual(len(calls), 2, "exactly one retry, not a loop")
+        msg = str(cm.exception)
+        self.assertIn("2 attempts", msg)
+        self.assertIn("404", msg)
+
+    def test_retries_are_bounded_so_a_missing_source_still_fails(self):
+        # The workflow has a 10 minute timeout. An unbounded retry loop would turn a
+        # deleted file into a hung job rather than a reported problem.
+        self.assertLessEqual(rf.RETRY_BACKOFF_SECONDS * 2, 30)
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(1)
+            raise OSError("boom")
+
+        with unittest.mock.patch.object(rf.urllib.request, "urlopen", fake_urlopen), \
+             unittest.mock.patch.object(rf.time, "sleep", lambda _s: None):
+            with self.assertRaises(rf.Undeterminable):
+                rf.fetch("https://example.invalid/x", attempts=2)
+        self.assertEqual(len(calls), 2)
 
 
 class OfflineMode(unittest.TestCase):

@@ -23,6 +23,71 @@ from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 PARTITION_DIR = ROOT / "firmware" / "partitions"
+PROVISIONING = ROOT / "firmware" / "include" / "bridge" / "Provisioning.hpp"
+
+# The two pieces that exist outside the partition table.
+#
+# Read from Provisioning.hpp rather than written here, because these numbers are
+# what an update writes to a real board and a flasher carrying its own copy of the
+# geometry is a flasher that will one day write a 28 KB bootloader into a region
+# that is not 28 KB. The header is the single owner; this follows it.
+_CONST_RE = re.compile(r"constexpr\s+std::uint32_t\s+(k\w+)\s*=\s*([^;]+);")
+
+
+def _geometry_constants() -> dict[str, int]:
+    """Resolve the uint32 geometry constants from Provisioning.hpp.
+
+    Iterative rather than recursive so a constant that refers to another declared
+    above it resolves, and a hypothetical cycle ends as a KeyError here rather than
+    a RecursionError in somebody's release.
+    """
+    pending = [(m.group(1), m.group(2).split("//")[0].strip())
+               for m in _CONST_RE.finditer(PROVISIONING.read_text(encoding="utf-8"))]
+    out: dict[str, int] = {}
+    for _ in range(len(pending) + 1):
+        if not pending:
+            break
+        still = []
+        for name, expr in pending:
+            # Hex literals are stripped before looking for names: "0x0" contains the
+            # identifier-shaped text "x0", which would look like an undeclared name.
+            residual = re.sub(r"0[xX][0-9a-fA-F]+|\b\d+\b", " ", expr)
+            if not set(re.findall(r"[A-Za-z_]\w*", residual)) <= set(out):
+                still.append((name, expr))
+                continue
+            out[name] = int(eval(expr, {"__builtins__": {}}, dict(out)))
+        if len(still) == len(pending):
+            break
+        pending = still
+    return out
+
+
+def read_geometry_constants() -> dict[str, int]:
+    """_geometry_constants(), but a missing or unreadable header is a FlashError.
+
+    A traceback out of a flashing tool reads like a bug in the tool. It is not: it
+    is the tool declining to write to a board with no geometry, which is the one
+    situation where the message must be plain and the exit code must be non-zero.
+    """
+    try:
+        return _geometry_constants()
+    except OSError as exc:
+        raise FlashError(
+            f"cannot read {PROVISIONING}, which owns the flash geometry: {exc}") from exc
+
+
+def geometry_constant(name: str) -> int:
+    """One geometry constant, or a hard error naming the constant.
+
+    A missing or unreadable constant must stop the tool. Falling back to a
+    plausible-looking default would mean writing to an address nobody chose.
+    """
+    consts = read_geometry_constants()
+    if name not in consts:
+        raise FlashError(
+            f"{PROVISIONING.name} does not define {name}; refusing to guess the "
+            f"flash geometry. Constants found: {', '.join(sorted(consts)) or 'none'}")
+    return consts[name]
 
 
 class FlashError(RuntimeError):
@@ -97,7 +162,10 @@ def validate(parts: list[Part], flash_size: int) -> None:
 
     Duplicated on purpose: the flashing tool has to be able to refuse a bad table
     on a machine with no C++ compiler, which is exactly the machine a new user
-    is on. The two implementations are cross-checked by the host test suite.
+    is on. Both implementations are exercised against the same shipped tables and
+    against the same adversarial ones -- see tests/test_flash_tool.py and
+    tests/test_partition_csv.cpp -- so a rule added to one and forgotten in the
+    other shows up as a disagreement between them.
     """
     for p in parts:
         if p.blank:
@@ -230,9 +298,12 @@ def system_pieces(csv_path: Path) -> dict[str, tuple[int, int]]:
         raise FlashError(f"{csv_path.name}: no app slots found")
 
     out: dict[str, tuple[int, int]] = {
-        # (offset, size) for the two pieces that exist outside the table.
-        "bootloader": (0x0, 0x7000),
-        "partition_tbl": (0x8000, 0x1000),
+        # The two pieces that exist outside the table, from the constants that own
+        # them rather than from numbers written here.
+        "bootloader": (geometry_constant("kBootloaderOffset"),
+                       geometry_constant("kBootloaderSize")),
+        "partition_tbl": (geometry_constant("kPartitionTableOffset"),
+                          geometry_constant("kPartitionTableSize")),
     }
     for p in parts:
         if p.offset + p.size > first_slot:

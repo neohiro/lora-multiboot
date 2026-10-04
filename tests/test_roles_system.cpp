@@ -261,6 +261,42 @@ void suite_system_update() {
     CHECK_MSG(d.find("slots and settings untouched") != std::string::npos, d);
   }
 
+  // --- the plan text is never silently incomplete ---------------------------
+  //
+  // The safety claim is the tail of this message, and a fixed buffer drops the
+  // tail first. A plan that lost it would read as a complete statement that simply
+  // stopped saying what was left alone, which is the one thing it exists to say.
+
+  {
+    // Every piece at once, at the widths this layout actually produces.
+    std::vector<SystemImage> images;
+    struct { SystemPiece piece; const char* path; std::uint32_t bytes; } real[] = {
+        {SystemPiece::Bootloader, "bootloader.bin", 0x7000},
+        {SystemPiece::PartitionTable, "pt.bin", 0x1000},
+        {SystemPiece::Otadata, "otadata.bin", 0x2000},
+        {SystemPiece::Nvs, "nvs.bin", 0xA000},
+        {SystemPiece::Coredump, "coredump.bin", 0x10000},
+    };
+    for (const auto& e : real) {
+      SystemImage img;
+      img.piece = e.piece;
+      img.path = e.path;
+      img.sizeBytes = e.bytes;
+      images.push_back(img);
+    }
+
+    UpdateReport r;
+    const UpdatePlan plan = planSystemUpdate(t, images, 0, &r);
+    CHECK_MSG(r.ok(), r.detail);
+    CHECK_EQ(plan.images.size(), 5u);
+    const std::string d = describeUpdate(plan);
+    CHECK_MSG(d.find("slots and settings untouched") != std::string::npos,
+              std::string("a five-piece plan lost its safety claim: ") + d);
+    CHECK_MSG(d.find("...") == std::string::npos,
+              std::string("a plan that fits should not claim truncation: ") + d);
+    CHECK_MSG(d.back() == 'd', std::string("and it should not end mid-word: ") + d);
+  }
+
   // --- an image that would overwrite slot 0 is refused ---------------------
 
   {
