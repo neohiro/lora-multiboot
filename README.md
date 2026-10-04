@@ -276,7 +276,7 @@ summers.
 | Frame decode → cross-protocol relay | **not written** |
 | OLED / BLE provisioning UX | **not written** |
 
-1,262 assertions and 92 tool tests pass, compiled under `-Werror` with
+1,262 assertions and 98 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`.
 
 ## The gate

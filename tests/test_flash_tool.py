@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -88,6 +89,72 @@ class GeometryConstants(unittest.TestCase):
                          (c["kBootloaderOffset"], c["kBootloaderSize"]))
         self.assertEqual(pieces["partition_tbl"],
                          (c["kPartitionTableOffset"], c["kPartitionTableSize"]))
+
+
+class InputValidationHappensBeforeAnythingIsErased(unittest.TestCase):
+    """A path is checked while the board is still untouched.
+
+    The tool erases a region and then writes it. If the write fails, the region
+    stays erased -- so an unusable input has to be refused before the first erase,
+    not discovered by esptool afterwards.
+    """
+
+    def test_missing_file_is_named_not_a_traceback(self):
+        with tempfile.TemporaryDirectory() as td:
+            gone = Path(td) / "nosuch.bin"
+            with self.assertRaises(flash.FlashError) as cm:
+                flash.require_file(gone, "bootloader")
+            msg = str(cm.exception)
+            self.assertIn("no such file", msg)
+            self.assertIn("nosuch.bin", msg)
+            self.assertIn("bootloader", msg)
+
+    def test_a_directory_is_distinguished_from_a_missing_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(flash.FlashError) as cm:
+                flash.require_file(Path(td), "bootloader")
+            self.assertIn("not a regular file", str(cm.exception))
+
+    def test_a_readable_file_reports_its_size(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bootloader.bin"
+            p.write_bytes(b"\x00" * 4096)
+            self.assertEqual(flash.require_file(p, "bootloader"), 4096)
+
+    def test_an_oversized_image_is_refused_by_size_not_by_the_erase(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "big.bin"
+            p.write_bytes(b"\x00" * 4096)
+            self.assertGreater(
+                flash.require_file(p, "ota_0"), 0,
+                "the size check needs the real size, which is what this guards")
+
+    def test_update_system_refuses_a_missing_bootloader(self):
+        # End to end through main(), because the point is the exit code and the
+        # message an operator sees, not an internal exception.
+        import subprocess
+        import sys
+        rc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "flash.py"), "--dry-run",
+             "update-system", "--bootloader", "definitely_missing.bin"],
+            cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(rc.returncode, 2, rc.stdout + rc.stderr)
+        combined = rc.stdout + rc.stderr
+        self.assertIn("no such file", combined)
+        self.assertNotIn("Traceback", combined,
+                         "a typo in a path must not produce a stack trace")
+
+    def test_app_refuses_a_missing_image_without_a_traceback(self):
+        import subprocess
+        import sys
+        rc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "flash.py"), "--dry-run",
+             "app", "2", "--app", "definitely_missing.bin"],
+            cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(rc.returncode, 2, rc.stdout + rc.stderr)
+        combined = rc.stdout + rc.stderr
+        self.assertIn("no such file", combined)
+        self.assertNotIn("Traceback", combined)
 
 
 class ParseSize(unittest.TestCase):

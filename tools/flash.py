@@ -76,6 +76,30 @@ def read_geometry_constants() -> dict[str, int]:
             f"cannot read {PROVISIONING}, which owns the flash geometry: {exc}") from exc
 
 
+def require_file(path: Path, what: str) -> int:
+    """Confirm an input file is usable, and return its size.
+
+    Checked before anything is erased, not after. This tool erases a region and
+    then writes it; an esptool failure on the write leaves the region erased, so a
+    path that does not exist must be discovered while the board is still untouched.
+
+    Every way of being unusable is named, because the caller is a person holding a
+    board who typed a path from memory: "missing", "a directory", and "cannot be
+    read" are three different mistakes and a traceback distinguishes none of them.
+    """
+    if not path.exists():
+        raise FlashError(f"{what}: no such file: {path}")
+    if not path.is_file():
+        raise FlashError(f"{what}: not a regular file: {path}")
+    try:
+        size = path.stat().st_size
+        with path.open("rb"):
+            pass
+    except OSError as exc:
+        raise FlashError(f"{what}: cannot read {path}: {exc}") from exc
+    return size
+
+
 def geometry_constant(name: str) -> int:
     """One geometry constant, or a hard error naming the constant.
 
@@ -382,7 +406,7 @@ def cmd_update_system(args) -> int:
         if label not in pieces:
             raise FlashError(f"{csv_path.name} has no {label} row")
         offset, capacity = pieces[label]
-        size = path.stat().st_size
+        size = require_file(path, label)
         if size > capacity:
             raise FlashError(
                 f"{label}: {path.name} is {size} B but the partition is {capacity} B"
@@ -459,7 +483,7 @@ def cmd_app(args) -> int:
         raise FlashError("pass --app PATH, --erase, or --erase-settings")
 
     path = args.app
-    size = path.stat().st_size
+    size = require_file(path, label)
     if size > target.size:
         raise FlashError(
             f"{path.name} is {size} B but {label} only has {target.size} B. "
@@ -616,10 +640,14 @@ def cmd_full(args) -> int:
                           by_label["otadata"].size, args.otadata))
     for label, path in sorted(args_map.items()):
         part = by_label[label]
-        if part.size and path.stat().st_size > part.size:
+        size = require_file(path, label)
+        if part.size and size > part.size:
             raise FlashError(f"{path.name} does not fit {label}")
         plan.append(Write(label, part.offset, part.size, path))
 
+    # Belt and braces: the loop above has already required every path, but a plan
+    # that reaches esptool with a missing file would erase the region and then fail
+    # to write it, which is the one outcome this tool exists to prevent.
     for w in plan:
         if w.path is not None and not w.path.is_file():
             raise FlashError(f"missing file: {w.path}")
