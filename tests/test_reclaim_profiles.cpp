@@ -70,7 +70,8 @@ void suite_reclaim() {
     REQUIRE(stage != nullptr);
     CHECK_EQ(stage->offset, r.freedOffset);
     CHECK_EQ(stage->size, r.freedBytes);
-    CHECK_MSG(stage->subType == PartSubType::Reserved, "declared as held-back space");
+    CHECK_MSG(stage->subType == PartSubType::Undefined,
+              "deliberately untyped: written by esptool, never mounted");
 
     // And the two live firmwares' settings are still exactly where they were.
     CHECK(r.table.find("fs_meshcore") != nullptr);

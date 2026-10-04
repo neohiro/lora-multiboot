@@ -174,14 +174,16 @@ std::string renderSlots(std::uint8_t slots, std::uint32_t flashSizeBytes) {
       "# one slots or sixteen, so growing this table can never move a partition\n"
       "# that already holds firmware.\n"
       "# Validate: python tools/gate.py\n";
-  csv += row("bootloader", "app ", "factory", kBootloaderOffset, kBootloaderSize);
-  csv += row("partition_tbl", "data", "nvs", kPartitionTableOffset, kPartitionTableSize);
-  csv += row("otadata", "data", "otadata", kOtadataOffset, kOtadataSize);
-  csv += row("nvs", "data", "nvs", kNvsOffset, kNvsSize);
-  // Emitted here rather than at the end because its offset is below the slots.
-  // The validator sorts by offset regardless, but a table a human can read
-  // top-to-bottom is a table that gets reviewed correctly.
-  csv += row("coredump", "data", "coredump", kCoredumpOffset, kCoredumpSize);
+// The partitions of the system region. The bootloader and the partition table are
+// deliberately absent: ESP-IDF's generator refuses any declared partition below
+// 0x9000, and both of those live lower. Their geometry is still known as constants
+// for the updater, which has to write them.
+csv += row("nvs", "data", "nvs", kNvsOffset, kNvsSize);
+csv += row("otadata", "data", "ota", kOtadataOffset, kOtadataSize);
+
+// Below the slots rather than above them, so capacity stays a single
+// subtraction and adding a slot never disturbs the crash dump.
+csv += row("coredump", "data", "coredump", kCoredumpOffset, kCoredumpSize);
 
   for (std::uint8_t i = 0; i < slots; ++i) {
     char lbl[24];

@@ -210,6 +210,11 @@ def system_pieces(csv_path: Path) -> dict[str, tuple[int, int]]:
     A system update writes only these. Nothing at or above the first slot is
     touched, which is what is meant by "updating the bootloader does not cost
     anybody their firmwares or their settings".
+
+    The bootloader and the partition table are not rows in the CSV -- ESP-IDF's
+    generator rejects any declared partition below 0x9000, and those two live
+    lower. They are added here from the same constants the firmware uses, because
+    the updater still has to write them.
     """
     parts = parse_csv(csv_path)
     first_slot = None
@@ -219,7 +224,11 @@ def system_pieces(csv_path: Path) -> dict[str, tuple[int, int]]:
     if first_slot is None:
         raise FlashError(f"{csv_path.name}: no app slots found")
 
-    out: dict[str, tuple[int, int]] = {}
+    out: dict[str, tuple[int, int]] = {
+        # (offset, size) for the two pieces that exist outside the table.
+        "bootloader": (0x0, 0x7000),
+        "partition_tbl": (0x8000, 0x1000),
+    }
     for p in parts:
         if p.offset + p.size > first_slot:
             continue
@@ -242,9 +251,13 @@ def cmd_list(args) -> int:
 
     first_slot = min(p.offset for p in parts if p.label.startswith("ota_"))
     print(f"\nsystem layer (below 0x{first_slot:X}, rewritten by --update-system):")
-    for p in parts:
-        if p.offset + p.size <= first_slot:
-            print(f"  0x{p.offset:06X}  {p.label:<15} {p.size:>8} B   {p.subtype}")
+    # system_pieces() includes the bootloader and the partition table, which exist
+    # outside the CSV on purpose. Listing only rows here would under-report what an
+    # update would actually rewrite.
+    for label, (offset, size) in sorted(system_pieces(csv_path).items(),
+                                        key=lambda kv: kv[1][0]):
+        implicit = "" if any(p.label == label for p in parts) else "   (implicit)"
+        print(f"  0x{offset:06X}  {label:<15} {size:>8} B{implicit}")
 
     print("\nslots (never touched by a system update):")
     # The slot -> settings pairing is read out of the table rather than assumed. The
@@ -515,11 +528,12 @@ def cmd_full(args) -> int:
             raise FlashError(f"no partition labelled {label!r} in {csv_path.name}")
         args_map[label] = Path(path)
 
+    # The bootloader and the partition table live outside the CSV on purpose (see
+    # system_pieces), so the layout comes from there rather than from a row.
+    system = system_pieces(csv_path)
     plan: list[Write] = [
-        Write("bootloader", by_label["bootloader"].offset,
-              by_label["bootloader"].size, args.bootloader),
-        Write("partition_tbl", by_label["partition_tbl"].offset,
-              by_label["partition_tbl"].size, args.part_table_bin),
+        Write("bootloader", *system["bootloader"], args.bootloader),
+        Write("partition_tbl", *system["partition_tbl"], args.part_table_bin),
     ]
     if args.otadata is not None:
         plan.append(Write("otadata", by_label["otadata"].offset,

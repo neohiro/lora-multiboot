@@ -73,6 +73,23 @@ jobs:
           fi
           echo "layouts match the code"
 
+  # The premise this project rests on is an external fact about two projects we do
+  # not control: that Meshtastic and MeshCore share a carrier. The scheduled
+  # rf-drift workflow watches it online; this is the half that needs no network and
+  # must never fail, which is that the recorded expectations still match the table
+  # firmware actually compiles.
+  rf:
+    name: Shared-carrier premise
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Offline cross-check
+        run: python3 tools/rf_drift.py --offline
+
   hygiene:
     name: Repository hygiene
     runs-on: ubuntu-latest

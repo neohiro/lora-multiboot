@@ -35,24 +35,36 @@ enum class PartType : std::uint8_t {
   Data,
 };
 
-// Subtypes we act on. Anything else is Data/unknown and only bounds-checked.
+// Subtypes we act on, plus the rest of ESP-IDF's accepted set so a hand-written
+// table parses the way the real generator would accept it.
+//
+// The names here are exactly ESP-IDF's, because the real generator rejects any
+// name it does not know. A table that validates against our parser but not against
+// gen_esp32_partitions.py is worse than useless -- it looks fine and bricks the
+// build -- so the test suite pins these against the published list.
 enum class PartSubType : std::uint8_t {
-  Factory,
-  Ota_0,
-  Ota_1,
-  Ota_2,
-  Ota_3,
-  Ota_4,
-  Ota_5,
-  Ota_6,
-  Ota_7,
-  Nvs,
-  Otadata,
-  Spiffs,
-  LittleFs,
-  Coredump,
-  Reserved,
-  Unknown,
+  Factory,       // app  0x00
+  Ota_0,         // app  0x10
+  Ota_1,         // app  0x11
+  Ota_2,         // app  0x12
+  Ota_3,         // app  0x13
+  Ota_4,         // app  0x14
+  Ota_5,         // app  0x15
+  Ota_6,         // app  0x16
+  Ota_7,         // app  0x17
+  Test,          // app  0x20
+  Otadata,       // data 0x00, spelled `ota` in the CSV
+  Phy,           // data 0x01
+  Nvs,           // data 0x02
+  Coredump,      // data 0x03
+  NvsKeys,       // data 0x04
+  Efuse,         // data 0x05
+  Undefined,     // data 0x06 -- purpose deliberately unspecified
+  EspHttpd,      // data 0x80
+  Fat,           // data 0x81
+  Spiffs,        // data 0x82
+  LittleFs,      // data 0x83
+  Unknown,       // numeric subtype outside the named set
 };
 
 struct Partition {

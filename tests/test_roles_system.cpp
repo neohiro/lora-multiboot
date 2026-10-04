@@ -312,7 +312,9 @@ void suite_system_update() {
     SystemImage big;
     big.piece = SystemPiece::Nvs;
     big.path = "nvs.bin";
-    big.sizeBytes = 0x20000;  // 128 KB from 0x16000 -> 0x36000, past 0x30000
+    // Offsets come from the layout's own constants rather than being written out,
+    // so this keeps testing the rule when the system region moves again.
+    big.sizeBytes = (kFirstSlotOffset - kNvsOffset) + 0x1000;
     images.push_back(big);
 
     UpdateReport r;

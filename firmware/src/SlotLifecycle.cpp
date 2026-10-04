@@ -118,15 +118,17 @@ std::vector<SlotStatus> allSlots(const SlotTable& table, const DeviceState& stat
 }
 
 bool bootloaderAlwaysReachable(const SlotTable& table) {
-  const Partition* b = table.find("bootloader");
-  if (b == nullptr) return false;
-  if (b->size == 0) return false;
-  // Below every slot, and not overlapping the first one.
-  if (b->offset + b->size > kFirstSlotOffset) return false;
+  // The bootloader is not a declared partition -- ESP-IDF's generator rejects any
+  // row below 0x9000, and the bootloader lives at 0x0. It is written separately by
+  // esptool, so its geometry comes from the same constants the layout and the
+  // updater use.
+  if (kBootloaderSize == 0) return false;
+  if (kBootloaderOffset + kBootloaderSize > kFirstSlotOffset) return false;
+
+  // And nothing that does exist in the table may overlap it.
+  const std::uint64_t bootEnd = kBootloaderOffset + kBootloaderSize;
   for (const Partition& p : table.partitions()) {
-    if (p.label == "bootloader") continue;
-    if (p.type != PartType::App) continue;
-    if (p.offset < b->offset + b->size && b->offset < p.offset + p.size) return false;
+    if (p.offset < bootEnd && kBootloaderOffset < p.offset + p.size) return false;
   }
   return true;
 }
@@ -335,12 +337,13 @@ ReclaimResult reclaimSlot(const SlotTable& table, const DeviceState& state,
   // Rebuild the table with this slot's rows dropped and the hole declared as a
   // staging partition. Every other slot's rows are emitted unchanged, which is the
   // whole safety argument: there is no arithmetic here that could move anything.
+  //
+  // The bootloader and partition table are not rows -- ESP-IDF's generator rejects
+  // any declared partition below 0x9000 -- so they are not emitted here either.
   std::string csv =
-      "bootloader,     app,  factory, 0x0,      0x7000,\n"
-      "partition_tbl,  data, nvs,     0x8000,   0xC000,\n"
-      "otadata,        data, otadata, 0x14000,  0x2000,\n"
-      "nvs,            data, nvs,     0x16000,  0xA000,\n"
-      "coredump,       data, coredump,0x20000,  0x10000,\n";
+      "nvs,            data, nvs,     0x9000,  0xA000,\n"
+      "otadata,        data, ota,     0x13000, 0x2000,\n"
+      "coredump,       data, coredump,0x15000, 0x10000,\n";
 
   for (std::uint8_t i = 0; i < declared; ++i) {
     if (i == index) continue;  // the hole
@@ -369,9 +372,15 @@ ReclaimResult reclaimSlot(const SlotTable& table, const DeviceState& state,
   }
 
   // The reclaimed hole, held for OTA staging.
+  //
+  // Deliberately `undefined` (0x06) rather than a filesystem type. This region is
+  // written with esptool and never mounted, so claiming SPIFFS or LittleFS would
+  // assert a format nothing here implements. It is also the honest reading: a data
+  // partition whose purpose is deliberately unspecified by the filesystem layer.
+  // "reserved" is not an ESP-IDF subtype name and the real generator rejects it.
   char stage[96];
-  std::snprintf(stage, sizeof(stage), "%-14s, data, reserved, 0x%X, 0x%X,\n", kOtaStagingLabel,
-                holeStart, holeEnd - holeStart);
+  std::snprintf(stage, sizeof(stage), "%-14s, data, undefined, 0x%X, 0x%X,\n",
+                kOtaStagingLabel, holeStart, holeEnd - holeStart);
   csv += stage;
 
   TableReport pr;

@@ -1,0 +1,128 @@
+name: Firmware
+
+# Builds the actual firmware with its actual toolchain, and validates the partition
+# tables with ESP-IDF's own generator.
+#
+# Why this is separate from the main gate: `tools/gate.py` type-checks main.cpp
+# against a hand-written Arduino shim, which is fast, needs nothing but a C++
+# compiler, and runs on every push. It is also a model of the Arduino API rather
+# than the Arduino API -- so it cannot catch a signature or overload that differs,
+# a board id PlatformIO does not recognise, or a partition table ESP-IDF rejects.
+#
+# Those are exactly the failures that would otherwise be found by a user, on their
+# first flash, with a board in their hand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  partitions:
+    name: ESP-IDF partition validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # esptool ships ESP-IDF's partition-table parser. This is the third party
+      # that gets to say no: our own parser, the host gate's rules, and now the
+      # generator the real build uses.
+      - name: Install esptool
+        run: python -m pip install --quiet esptool
+
+      - name: Generate the partition table the way ESP-IDF does
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for table in firmware/partitions/*.csv; do
+            name=$(basename "$table" .csv)
+            echo "== $name"
+            python -m esptool \
+              --chip esp32s3 \
+              generate-partition-table "$table" \
+              --output-partition-table "out/$name.bin" \
+              --output-flash-image out/bootloader.bin 0x1000 \
+              --flash-size 16MB
+            echo "   ok -> out/$name.bin ($(stat -c%s "out/$name.bin") bytes)"
+          done
+
+      - name: Show what ESP-IDF made of each table
+        run: |
+          set -euo pipefail
+          for bin in out/*.bin; do
+            echo "== $bin"
+            python -m esptool --chip esp32s3 generate-partition-table "$bin"
+          done
+
+  firmware:
+    name: PlatformIO build (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [heltec_v4_bridge, heltec_v4_bridge_dualboot]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache the ESP32 toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ matrix.env }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: python -m pip install --quiet platformio
+
+      - name: Build
+        run: pio run -d firmware -e ${{ matrix.env }}
+
+      # The shim that lets the fast gate type-check main.cpp is a model of Arduino,
+      # so a green shim check is not proof the real build links. Report the image
+      # size against the slot it has to fit in, because "too big for its partition"
+      # is otherwise discovered by the bootloader refusing to run it.
+      - name: Image fits its slot
+        run: |
+          set -euo pipefail
+          slot_bytes=${{ matrix.env == 'heltec_v4_bridge' && '2097152' || '2097152' }}
+          bin=$(ls -1 firmware/.pio/build/${{ matrix.env }}/firmware.bin 2>/dev/null | head -1)
+          if [ -z "$bin" ]; then
+            echo "::error::no firmware.bin produced"
+            ls -R firmware/.pio/build/${{ matrix.env }} | head -50
+            exit 1
+          fi
+          size=$(stat -c%s "$bin")
+          echo "firmware.bin: $size bytes; slot: $slot_bytes bytes"
+          if [ "$size" -gt "$slot_bytes" ]; then
+            echo "::error::image does not fit the slot"
+            exit 1
+          fi
+          echo "fits, with $((slot_bytes - size)) bytes spare"
+
+      - name: Warnings are failures
+        run: |
+          set -euo pipefail
+          if grep -qiE '^.*(warning|error):' firmware/.pio/build/${{ matrix.env }}/ 2>/dev/null; then
+            echo "::error::compiler diagnostics present in the build tree"
+            exit 1
+          fi
+          echo "no compiler diagnostics"

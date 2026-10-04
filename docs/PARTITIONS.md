@@ -27,15 +27,41 @@ fs        1 MB immediately after
 | Filesystem | `0x100000` (1 MB) |
 | First slot | `0x30000` |
 
-Everything below the slots is fixed forever and never relocated:
+Everything below the slots is fixed forever and never relocated. Two of these are
+**not rows in the CSV at all**:
 
-| Label | Offset | Size |
-|---|---|---|
-| `bootloader` | `0x0` | 28 KB |
-| `partition_tbl` | `0x8000` | 48 KB |
-| `otadata` | `0x14000` | 8 KB |
-| `nvs` | `0x16000` | 40 KB |
-| `coredump` | `0x20000` | 64 KB |
+| Piece | Offset | Size | In the CSV? |
+|---|---|---|---|
+| `bootloader` | `0x0` | 28 KB | **no** |
+| `partition_tbl` | `0x8000` | 4 KB | **no** — it is the generator's output |
+| `nvs` | `0x9000` | 40 KB | yes |
+| `otadata` | `0x13000` | 8 KB | yes (subtype `ota`) |
+| `coredump` | `0x15000` | 64 KB | yes |
+| — | `0x30000` ← **cut** | | |
+| slots and their settings | `0x30000` and above | | **never** |
+
+Why the first two are absent is not a style choice. `gen_esp32part.py` starts the
+first *declared* partition at `0x8000 + 0x1000 = 0x9000` and rejects any row below
+it, skipping only rows whose type is `bootloader` or `partition_table`. Declaring
+the bootloader as an `app` row at `0x0` is therefore refused outright — and it was,
+by the real generator, before this document existed.
+
+Their geometry is still known, as constants in `Provisioning.hpp`, because the
+system layer has to be updatable: `SystemUpdate` falls back to them for a table
+that has no row.
+
+Two more things that only the real generator teaches:
+
+- The OTA data partition's **label** is `otadata` but its **subtype** must be
+  `ota`. `otadata` is not an ESP-IDF subtype name.
+- The accepted subtype names are `factory`, `ota_0`–`ota_15`, `test` for `app`, and
+  `ota`, `phy`, `nvs`, `coredump`, `nvs_keys`, `efuse`, `undefined`, `esphttpd`,
+  `fat`, `spiffs`, `littlefs` for `data`. Anything else is rejected. The OTA staging
+  region uses `undefined` on purpose: it is written by esptool and never mounted,
+  so claiming a filesystem would assert a format nothing implements.
+
+CI builds these tables with the genuine `gen_esp32part.py`, so none of this is
+taken on trust.
 
 And every slot, so each row exists in the shipped table by arithmetic rather than
 by being typed in:

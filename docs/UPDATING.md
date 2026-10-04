@@ -10,13 +10,18 @@ The system layer is **everything below the first slot**:
 
 | Region | Offsets | Rewritten by an update? |
 |---|---|---|
-| `bootloader` | `0x000000` | yes |
-| `partition_tbl` | `0x008000` | yes |
-| `otadata` | `0x014000` | yes |
-| `nvs` | `0x016000` | yes |
-| `coredump` | `0x020000` | yes |
+| `bootloader` | `0x000000` | yes — implicit, not a CSV row |
+| `partition_tbl` | `0x008000` | yes — implicit, it is the generator's own output |
+| `nvs` | `0x009000` | yes |
+| `otadata` | `0x013000` | yes |
+| `coredump` | `0x015000` | yes |
 | — | `0x030000` ← **cut** | — |
 | slots and their settings | `0x030000` and above | **never** |
+
+The bootloader and the partition table live outside the CSV because ESP-IDF's
+generator rejects any declared partition below `0x9000` — declaring them as rows
+was tried and refused by the real tool. Their geometry is still known to the
+updater, as constants in `Provisioning.hpp`.
 
 That gives a clean, checkable property:
 

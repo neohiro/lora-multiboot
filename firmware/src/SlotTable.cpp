@@ -49,12 +49,23 @@ PartSubType parseSubType(const std::string& s) {
   if (v == "ota_1") return PartSubType::Ota_1;
   if (v == "ota_2") return PartSubType::Ota_2;
   if (v == "ota_3") return PartSubType::Ota_3;
+  if (v == "ota_4") return PartSubType::Ota_4;
+  // ESP-IDF spells the OTA data partition's subtype `ota` (0x00). `otadata` is the
+  // conventional *label*, not a subtype name, and the real generator rejects it --
+  // so it is accepted here only so an older hand-written table still parses.
+  if (v == "ota" || v == "otadata") return PartSubType::Otadata;
   if (v == "nvs") return PartSubType::Nvs;
-  if (v == "otadata") return PartSubType::Otadata;
+  if (v == "coredump") return PartSubType::Coredump;
+  if (v == "nvs_keys") return PartSubType::NvsKeys;
+  if (v == "efuse") return PartSubType::Efuse;
+  if (v == "phy") return PartSubType::Phy;
+  // A data partition with deliberately unspecified purpose: the OTA staging
+  // region. Not a filesystem, so nothing may mount it.
+  if (v == "undefined") return PartSubType::Undefined;
+  if (v == "esphttpd") return PartSubType::EspHttpd;
+  if (v == "fat") return PartSubType::Fat;
   if (v == "spiffs") return PartSubType::Spiffs;
   if (v == "littlefs" || v == "lfs") return PartSubType::LittleFs;
-  if (v == "coredump") return PartSubType::Coredump;
-  if (v == "reserved") return PartSubType::Reserved;
 
   // ESP-IDF also writes subtypes numerically, and OTA slots are the case that
   // matters here: ota_0..ota_N are subtypes 16..16+N. A table naming ota_4 is

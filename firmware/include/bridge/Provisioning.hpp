@@ -92,26 +92,40 @@ constexpr std::uint32_t kSlotStrideBytes = 0x300000;
 constexpr std::uint32_t kSlotAppBytes = 0x200000;
 constexpr std::uint32_t kSlotFsBytes = 0x100000;
 
-// First app slot. Everything below this is fixed forever and is never relocated
-// as the table grows: bootloader, partition table, otadata, NVS, and the crash
-// dump. Putting the coredump *below* the slots rather than above them is what
-// makes capacity a single subtraction instead of a moving target.
+// The region below the first slot.
+//
+// Only the three rows that are genuinely *partitions* live here. The bootloader
+// and the partition table are NOT declared as rows, and this is not a style
+// choice -- it is a hard requirement of ESP-IDF's generator.
+//
+//   gen_esp32part.py starts the first declared partition at
+//   CONFIG_PARTITION_TABLE_OFFSET + PARTITION_TABLE_SIZE = 0x8000 + 0x1000 = 0x9000,
+//   and rejects any row below that. It also skips only rows whose *type* is
+//   `bootloader` or `partition_table`, so declaring the bootloader as an `app` row
+//   at 0x0 is rejected outright.
+//
+// The bootloader is written separately (esptool `--flash-image ... 0x1000`) and the
+// table is the generator's own output. Declaring them as partitions produced a
+// table that passed every check here and was refused by the real tool.
+//
+// Offsets and sizes are still known, because the system layer has to be updatable:
+// SystemUpdate falls back to these constants when the table has no row for the
+// piece.
 constexpr std::uint32_t kBootloaderOffset = 0x0;
-constexpr std::uint32_t kBootloaderSize = 0x7000;
 constexpr std::uint32_t kPartitionTableOffset = 0x8000;
-constexpr std::uint32_t kPartitionTableSize = 0xC000;
-constexpr std::uint32_t kOtadataOffset = 0x14000;
-constexpr std::uint32_t kOtadataSize = 0x2000;
-constexpr std::uint32_t kNvsOffset = 0x16000;
-constexpr std::uint32_t kNvsSize = 0xA000;
+constexpr std::uint32_t kPartitionTableSize = 0x1000;
+constexpr std::uint32_t kBootloaderSize = kPartitionTableOffset - 0x1000;  // 0x7000
 
-// Crash dump sits in the fixed region below the slots, so adding a slot never
-// disturbs it and it never has to move.
-constexpr std::uint32_t kCoredumpOffset = 0x20000;
+// First declared partition. 0x9000 is the floor ESP-IDF enforces.
+constexpr std::uint32_t kNvsOffset = 0x9000;
+constexpr std::uint32_t kNvsSize = 0xA000;
+constexpr std::uint32_t kOtadataOffset = 0x13000;
+constexpr std::uint32_t kOtadataSize = 0x2000;
+constexpr std::uint32_t kCoredumpOffset = 0x15000;
 constexpr std::uint32_t kCoredumpSize = 0x10000;
 
-// Where slot 0 begins.
-constexpr std::uint32_t kFirstSlotOffset = kCoredumpOffset + kCoredumpSize;  // 0x30000
+// Where slot 0 begins. Above the whole system region and 64 KB aligned.
+constexpr std::uint32_t kFirstSlotOffset = 0x30000;
 
 // A board that must never be bricked by growth.
 constexpr std::uint32_t kDefaultFlashBytes = 16u * 1024u * 1024u;

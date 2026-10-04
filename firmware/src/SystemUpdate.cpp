@@ -38,19 +38,33 @@ const char* systemPieceName(SystemPiece piece) {
 
 std::uint32_t systemPieceSize(const SlotTable& table, SystemPiece piece) {
   const Partition* p = table.find(labelFor(piece));
-  if (p == nullptr || p->blank) return 0;
+  if (p == nullptr || p->blank) {
+    // The bootloader and the partition table are not declared as rows -- ESP-IDF's
+    // generator rejects any partition below 0x9000 -- but the updater still has to
+    // write them, so their geometry comes from the same constants the layout uses.
+    if (piece == SystemPiece::Bootloader) return kBootloaderSize;
+    if (piece == SystemPiece::PartitionTable) return kPartitionTableSize;
+    return 0;
+  }
   return p->size;
 }
 
 std::uint32_t systemPieceOffset(const SlotTable& table, SystemPiece piece) {
   const Partition* p = table.find(labelFor(piece));
-  if (p == nullptr) return kAbsent;
-  return p->offset;
+  if (p != nullptr) return p->offset;
+  if (piece == SystemPiece::Bootloader) return kBootloaderOffset;
+  if (piece == SystemPiece::PartitionTable) return kPartitionTableOffset;
+  return kAbsent;
 }
 
 bool systemRegionIsContained(const SlotTable& table) {
-  // Every system piece must end at or before the first slot. If one does not, the
-  // layout is wrong and a system update would eat a firmware image.
+  // The two implicit pieces are checked against the constants, because they have
+  // no rows to check.
+  if (kBootloaderOffset + kBootloaderSize > kFirstSlotOffset) return false;
+  if (kPartitionTableOffset + kPartitionTableSize > kFirstSlotOffset) return false;
+
+  // Every declared system piece must end at or before the first slot. If one does
+  // not, the layout is wrong and a system update would eat a firmware image.
   for (const PieceRow& r : kRows) {
     const Partition* p = table.find(r.label);
     if (p == nullptr) continue;

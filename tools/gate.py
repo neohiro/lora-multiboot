@@ -172,26 +172,36 @@ def compile_and_run(verbose: bool) -> int:
     return run.returncode
 
 
+PY_TEST_FILES = [
+    "tests/test_flash_tool.py",
+    "tests/test_rf_drift.py",
+]
+
+
 def run_python_tests(verbose: bool) -> int:
-    print()
-    print("== flashing tool ==")
-    proc = subprocess.run(
-        [sys.executable, "tests/test_flash_tool.py"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    tail = proc.stderr.strip().splitlines()
-    for line in tail[-4:]:
-        print(line)
+    """Every Python test file, each as its own process.
+
+    Separate processes rather than one discovery run: a test module that fails to
+    import is then a clean failure of its own file rather than taking the others
+    down with it, and the counts stay attributable.
+    """
+    worst = 0
+    total = 0
+    for rel in PY_TEST_FILES:
+        proc = subprocess.run(
+            [sys.executable, rel], cwd=ROOT, capture_output=True, text=True)
+        m = re.search(r"Ran (\d+) tests?", proc.stderr)
+        n = int(m.group(1)) if m else 0
+        total += n
+        print(f"  {rel}: {n} tests", flush=True)
+        if proc.returncode != 0:
+            sys.stderr.write(proc.stdout + proc.stderr)
+            worst = proc.returncode or 1
+    print(f"python tests: {total} total")
 
     global COUNT_PY
-    m = re.search(r"Ran (\d+) tests?", proc.stderr)
-    if m:
-        COUNT_PY = int(m.group(1))
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stdout + proc.stderr)
-    return proc.returncode
+    COUNT_PY = total
+    return worst
 
 
 def compile_firmware_entry(verbose: bool) -> int:

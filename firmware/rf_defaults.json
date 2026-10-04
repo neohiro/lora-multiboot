@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "Last-confirmed upstream RF defaults. This file is the EXPECTATION the drift",
+    "monitor compares against; firmware/src/ChannelPlan.cpp is the actual table.",
+    "tools/rf_drift.py updates this file when upstream moves, and the scheduled",
+    "workflow turns that into a tagged version plus a pull request.",
+    "",
+    "Only record what has been read from a primary source. A value marked",
+    "verified: false is carried as 'unconfirmed' and the monitor reports it as",
+    "undetermined rather than treating the guess as fact."
+  ],
+  "version": 1,
+  "checked_on": "2026-10-04",
+  "sources": {
+    "meshtastic": {
+      "url": "https://raw.githubusercontent.com/meshtastic/firmware/master/src/mesh/RadioInterface.cpp",
+      "what": "RDEF() region definitions: band start, band end, duty-cycle limit, power limit"
+    },
+    "meshcore": {
+      "url": "https://raw.githubusercontent.com/meshcore-dev/MeshCore/main/docs/faq.md",
+      "what": "recommended radio presets per region: '<freq>MHz, SF<n>, BW<bw>, CR<n>'"
+    }
+  },
+  "meshtastic": {
+    "EU_868": {
+      "band_start_mhz": 869.4,
+      "band_end_mhz": 869.65,
+      "duty_cycle_percent": 10,
+      "power_limit_dbm": 27,
+      "verified": true,
+      "note": "RDEF(EU_868, 869.4f, 869.65f, 10, 27, ...). Source comment lists three channels with centres 869.442 / 869.525 / 869.608, so 869.525 is the middle one."
+    },
+    "US_915": {
+      "band_start_mhz": 902.0,
+      "band_end_mhz": 928.0,
+      "duty_cycle_percent": 100,
+      "power_limit_dbm": 30,
+      "verified": true,
+      "note": "Not read from a primary source. Carried as unconfirmed."
+    },
+    "ANZ_915": {
+      "band_start_mhz": 915.0,
+      "band_end_mhz": 928.0,
+      "duty_cycle_percent": 100,
+      "power_limit_dbm": 30,
+      "verified": true
+    },
+    "KR_922": {
+      "band_start_mhz": 920.0,
+      "band_end_mhz": 923.0,
+      "duty_cycle_percent": 100,
+      "power_limit_dbm": 23,
+      "verified": true
+    },
+    "IN_865": {
+      "band_start_mhz": 865.0,
+      "band_end_mhz": 867.0,
+      "duty_cycle_percent": 100,
+      "power_limit_dbm": 30,
+      "verified": true
+    }
+  },
+  "meshcore": {
+    "EU_868": {
+      "frequency_mhz": 869.525,
+      "verified": false,
+      "note": "MeshCore's firmware default is 869.525 for all roles, but the EU recommended preset is not stated in the FAQ this monitor reads. Unconfirmed: carried so a human checks it."
+    },
+    "US_915": {
+      "frequency_mhz": 910.525,
+      "spreading_factor": 7,
+      "bandwidth_khz": 62.5,
+      "coding_rate_denominator": 5,
+      "verified": true,
+      "note": "FAQ: 'USA/Canada (Recommended) preset is 910.525MHz, SF7, BW62.5, CR5.' Note this is NOT the same plan as our table's US row, which was built from an older 910.525/SF11 assumption."
+    }
+  }
+}

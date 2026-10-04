@@ -1,0 +1,189 @@
+name: RF drift
+
+# Watches the one external fact this whole project depends on: that Meshtastic and
+# MeshCore share a carrier, so a single SX1262 can serve both.
+#
+# That is true today and neither project is ours. If it stops being true the
+# architecture does not degrade politely -- it becomes one mesh plus noise while
+# still looking healthy, which is the failure mode nobody catches until a node is
+# on a mast.
+#
+# What happens on drift:
+#   - the newly observed values are recorded in firmware/rf_defaults.json
+#   - VERSION is bumped and the commit is tagged
+#   - a pull request is opened describing exactly which value moved
+#
+# "Undeterminable" is deliberately not treated as success. If a source cannot be
+# reached or parsed, that is raised as an issue rather than reported as an
+# all-clear, because a monitor that shrugs when it cannot see is worse than no
+# monitor at all.
+
+on:
+  schedule:
+    # Weekly, Monday 06:17 UTC. Deliberately not on the hour: the point of an odd
+    # minute is to avoid the thundering herd every scheduler on the internet has.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "Record newly observed upstream values into rf_defaults.json"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # tag the new version
+  pull-requests: write
+
+concurrency:
+  group: rf-drift
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check upstream RF defaults
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      result: ${{ steps.run.outputs.result }}
+      report: ${{ steps.run.outputs.report }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check
+        id: run
+        env:
+          WRITE: ${{ github.event_name == 'workflow_dispatch' && inputs.write || '0' }}
+        run: |
+          set +e
+          python3 tools/rf_drift.py ${{ inputs.write && '--write' || '' }} > drift.txt 2>&1
+          code=$?
+          set -e
+          cat drift.txt
+          case "$code" in
+            0) echo "result=ok"      >> "$GITHUB_OUTPUT" ;;
+            3) echo "result=drift"    >> "$GITHUB_OUTPUT" ;;
+            4) echo "result=unknown"  >> "$GITHUB_OUTPUT" ;;
+            *) echo "result=error"    >> "$GITHUB_OUTPUT"; echo "unexpected exit $code"; exit 1 ;;
+          esac
+          {
+            echo 'report<<EOF'
+            cat drift.txt
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      # The local half, which needs no network at all and must never drift out of
+      # step with what the firmware actually compiles.
+      - name: Offline cross-check
+        run: python3 tools/rf_drift.py --offline
+
+  version:
+    name: Cut a version
+    needs: check
+    if: needs.check.outputs.result == 'drift' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Bump version
+        id: bump
+        run: |
+          set -euo pipefail
+          current=$(cat VERSION)
+          major=${current%%.*}
+          minor=${current#*.}; minor=${minor%%.*}
+          patch=${current##*.}; patch=${patch%%.*}
+          next="$major.$((minor+1)).0"
+          printf '%s\n' "$next" > VERSION
+          echo "old=$current" >> "$GITHUB_OUTPUT"
+          echo "new=$next"     >> "$GITHUB_OUTPUT"
+          echo "$current -> $next"
+
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: rf-drift/$(github.run_number)
+          commit-message: "RF defaults moved upstream: v${{ steps.bump.outputs.new }}"
+          title: "RF defaults moved upstream (v${{ steps.bump.outputs.new }})"
+          body: |
+            Upstream radio defaults changed. This pull request records the newly
+            observed values and cuts **v${{ steps.bump.outputs.new }}**
+            (was v${{ steps.bump.outputs.old }}).
+
+            ```
+            ${{ needs.check.outputs.report }}
+            ```
+
+            ### What this means
+
+            The shared-carrier premise is what lets one SX1262 serve both meshes.
+            Check the report above for whether it still holds:
+
+            - **Band limits or duty cycle changed** — `ChannelPlan.cpp` may need
+              retuning, and the airtime cap must be re-checked against the new limit.
+            - **Only a region's power limit changed** — `RadioPlan.cpp` may reject a
+              power level that is now illegal.
+            - **A carrier moved** — the affected region no longer has a shared
+              carrier and `resolvePlan()` will report `FrequencyMismatch`.
+
+            Merging does **not** retune anything by itself. The recorded values are
+            evidence; the table in `ChannelPlan.cpp` is changed deliberately, by a
+            human, with `make check` proving the result.
+
+      - name: Tag the version
+        if: success()
+        run: |
+          git fetch --tags
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.bump.outputs.new }}" -m "RF defaults moved upstream"
+          git push origin "v${{ steps.bump.outputs.new }}"
+
+  report:
+    name: Raise an issue when the check cannot see
+    needs: check
+    if: needs.check.outputs.result == 'unknown' || needs.check.outputs.result == 'error'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Explain
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              'The RF drift monitor could not read one of its upstream sources.',
+              '',
+              'It is reporting "undeterminable" rather than "no drift" on purpose:',
+              'a monitor that reports agreement it did not verify is worse than one',
+              'that admits ignorance. This project depends on Meshtastic and',
+              'MeshCore continuing to share a carrier, so a silent monitor is a real',
+              'risk rather than a missing nicety.',
+              '',
+              '```',
+              '${{ needs.check.outputs.report }}',
+              '```',
+              '',
+              'Likely one of:',
+              '',
+              '- the source URL moved or the file was renamed',
+              '- the upstream file was restructured, so the parser needs updating',
+              '- a transient network failure',
+              '',
+              'The parser that needs attention is in `tools/rf_drift.py`, and',
+              '`tests/test_rf_drift.py` covers its behaviour offline.',
+            ].join('\n');
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'RF drift monitor cannot read an upstream source',
+              body,
+            });

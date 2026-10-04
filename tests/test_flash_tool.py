@@ -182,9 +182,15 @@ class SystemLayer(unittest.TestCase):
                 self.assertFalse(label.startswith("fs_"), f"{name}: {label} is a filesystem")
 
     def test_matches_the_first_slot_cut(self):
-        # 0x30000 is the cut, and it is the invariant the C++ side asserts too.
+        # The system region ends below the first slot. Both sides of the cut come
+        # from the layout rather than being written out here, so this keeps testing
+        # the relationship when the region moves.
+        parts = flash.parse_csv(PARTITION_DIR / "quadboot.csv")
+        first_slot = min(p.offset for p in parts if p.label.startswith("ota_"))
         pieces = flash.system_pieces(PARTITION_DIR / "quadboot.csv")
-        self.assertEqual(pieces["coredump"][0] + pieces["coredump"][1], 0x30000)
+        region_end = max(off + size for off, size in pieces.values())
+        self.assertLess(region_end, first_slot)
+        self.assertEqual(pieces["coredump"][0] + pieces["coredump"][1], region_end)
 
     def test_refuses_a_table_with_no_slots(self):
         import tempfile
@@ -292,6 +298,83 @@ class EsptoolInvocation(unittest.TestCase):
         self.assertEqual(w.size, 0x200000)
         self.assertEqual(w.offset, 0x30000)
         self.assertIsNone(w.path)
+
+
+class EspIdfSubtypeNames(unittest.TestCase):
+    """Every subtype we emit must be a name ESP-IDF actually accepts.
+
+    `gen_esp32_partitions.py` rejects an unrecognised subtype *name* rather than
+    tolerating it. So a table can pass our own validator, look entirely reasonable to
+    a human, and still be unusable by the real build -- which is the worst possible
+    combination, because nothing local complains.
+
+    Two of these were wrong before this class existed: `otadata` (the conventional
+    *label* for the OTA data partition, not a subtype name -- the subtype is `ota`)
+    and `reserved`, which is not an ESP-IDF name at all.
+    """
+
+    # From esp_partition.h / the ESP-IDF partition-tables guide. app: factory,
+    # ota_0..ota_15, test. data: ota, phy, nvs, coredump, nvs_keys, efuse,
+    # undefined, esphttpd, fat, spiffs, littlefs.
+    APP_SUBTYPES = {"factory", "test"} | {f"ota_{i}" for i in range(16)}
+    DATA_SUBTYPES = {"ota", "phy", "nvs", "coredump", "nvs_keys", "efuse",
+                     "undefined", "esphttpd", "fat", "spiffs", "littlefs"}
+
+    def _rows(self, name):
+        return flash.parse_csv(PARTITION_DIR / f"{name}.csv")
+
+    def test_shipped_tables_use_only_valid_subtype_names(self):
+        for name in ("quadboot", "dualboot"):
+            for p in self._rows(name):
+                allowed = self.APP_SUBTYPES if p.ptype == "app" else self.DATA_SUBTYPES
+                with self.subTest(table=name, label=p.label):
+                    self.assertIn(
+                        p.subtype, allowed,
+                        f"{name}: subtype {p.subtype!r} on {p.label!r} is not an "
+                        f"ESP-IDF {p.ptype} subtype name; gen_esp32_partitions.py "
+                        f"will reject it")
+
+    def test_otadata_row_uses_the_ota_subtype(self):
+        # The label is "otadata" everywhere in the ecosystem; the subtype is "ota".
+        # Conflating the two is easy and produces a table the build refuses.
+        for name in ("quadboot", "dualboot"):
+            row = next(p for p in self._rows(name) if p.label == "otadata")
+            with self.subTest(table=name):
+                self.assertEqual(row.subtype, "ota")
+
+    def test_types_are_valid(self):
+        for name in ("quadboot", "dualboot"):
+            for p in self._rows(name):
+                with self.subTest(table=name, label=p.label):
+                    self.assertIn(p.ptype, {"app", "data"})
+
+    def test_partition_table_is_implicit_at_the_standard_offset(self):
+        # The partition table is NOT a row: ESP-IDF's generator rejects any
+        # declared partition below 0x8000 + 0x1000 = 0x9000, and the table itself
+        # lives at 0x8000. It is the generator's own output. So the invariant to
+        # check is that no *row* sits below the floor, and that the implicit
+        # geometry the flasher uses is the standard one.
+        for name in ("quadboot", "dualboot"):
+            with self.subTest(table=name):
+                for p in self._rows(name):
+                    self.assertGreaterEqual(
+                        p.offset, 0x9000,
+                        f"{name}: {p.label} at 0x{p.offset:X} is below the floor "
+                        f"ESP-IDF enforces (0x8000 table + 0x1000)")
+                self.assertNotIn("partition_tbl", {p.label for p in self._rows(name)})
+                self.assertNotIn("bootloader", {p.label for p in self._rows(name)})
+
+        pieces = flash.system_pieces(PARTITION_DIR / "quadboot.csv")
+        self.assertEqual(pieces["partition_tbl"][0], 0x8000)
+        self.assertEqual(pieces["bootloader"][0], 0x0)
+
+    def test_ota_subtype_count_within_esp_idf_limit(self):
+        # ota_0..ota_15 only; ota_16 would not exist to the bootloader.
+        for name in ("quadboot", "dualboot"):
+            for p in self._rows(name):
+                if p.subtype.startswith("ota_"):
+                    with self.subTest(table=name, label=p.label):
+                        self.assertIn(p.subtype, self.APP_SUBTYPES)
 
 
 if __name__ == "__main__":
