@@ -418,6 +418,97 @@ class FetchRetries(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class AtomicWrite(unittest.TestCase):
+    """rf_defaults.json is committed and compared against by the offline gate.
+
+    A run interrupted between truncating and writing would otherwise leave invalid
+    JSON, which reads as upstream drift next week and as a broken gate in CI.
+    """
+
+    def _original(self, tmp: pathlib.Path) -> pathlib.Path:
+        exp = tmp / "rf_defaults.json"
+        exp.write_text(json.dumps({
+            "sources": {}, "checked_on": "2000-01-01",
+            "meshtastic": {"EU_868": {"duty_cycle_percent": 10}},
+            "meshcore": {}}), encoding="utf-8")
+        return exp
+
+    def test_the_write_leaves_no_temporary_file_behind(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            exp = self._original(tmp)
+            saved = rf.EXPECTATIONS
+            rf.EXPECTATIONS = exp
+            try:
+                self.assertTrue(rf.record_observations(
+                    {"EU_868": {"duty_cycle_percent": 1}}, [], undeterminable=[]))
+            finally:
+                rf.EXPECTATIONS = saved
+            self.assertEqual(json.loads(exp.read_text(encoding="utf-8"))
+                             ["meshtastic"]["EU_868"]["duty_cycle_percent"], 1)
+            leftovers = [p.name for p in tmp.iterdir() if p.name.endswith(".tmp")]
+            self.assertEqual(leftovers, [],
+                             f"a temporary file was left behind: {leftovers}")
+
+    def test_a_failed_write_does_not_destroy_the_original(self):
+        # Simulate the write failing partway, which is the case atomicity exists for.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            exp = self._original(tmp)
+            original = exp.read_text(encoding="utf-8")
+
+            real_replace = pathlib.Path.replace
+
+            def boom(self, target):
+                raise OSError("no space left on device")
+
+            saved = rf.EXPECTATIONS
+            rf.EXPECTATIONS = exp
+            pathlib.Path.replace = boom
+            try:
+                with self.assertRaises(OSError):
+                    rf.record_observations(
+                        {"EU_868": {"duty_cycle_percent": 99}}, [],
+                        undeterminable=[])
+            finally:
+                pathlib.Path.replace = real_replace
+                rf.EXPECTATIONS = saved
+
+            # The old file is still intact and still valid JSON.
+            self.assertEqual(exp.read_text(encoding="utf-8"), original)
+            json.loads(exp.read_text(encoding="utf-8"))
+            self.assertEqual([p.name for p in tmp.iterdir() if p.name.endswith(".tmp")],
+                             [], "the failed write left its temporary file behind")
+
+    def test_it_really_is_atomic_and_not_truncate_then_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            exp = self._original(tmp)
+            seen = []
+            real_write = pathlib.Path.write_text
+
+            def spy(self, *a, **kw):
+                # If the destination were written directly its contents would change
+                # before the rename. Writing a sibling leaves it untouched until the
+                # rename, which is the whole point of doing it this way.
+                seen.append(self.name)
+                return real_write(self, *a, **kw)
+
+            saved = rf.EXPECTATIONS
+            rf.EXPECTATIONS = exp
+            pathlib.Path.write_text = spy
+            try:
+                rf.record_observations(
+                    {"EU_868": {"duty_cycle_percent": 5}}, [], undeterminable=[])
+            finally:
+                pathlib.Path.write_text = real_write
+                rf.EXPECTATIONS = saved
+
+            self.assertEqual(seen, ["rf_defaults.json.tmp"],
+                             "the destination was written directly, so the rename "
+                             "is not providing atomicity")
+
+
 class OfflineMode(unittest.TestCase):
     def test_offline_reports_no_drift_against_current_files(self):
         # The half that must always work, because it needs no internet.

@@ -442,8 +442,24 @@ def record_observations(observed_mt: dict, observed_mc: list[dict],
         return False
 
     data["checked_on"] = _today()
-    EXPECTATIONS.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                            encoding="utf-8", newline="\n")
+
+    # Written atomically. This file is committed and the offline gate compares
+    # against it, so a run interrupted between truncate and write -- a cancelled
+    # job, a full disk, a killed process -- would otherwise leave invalid JSON that
+    # reads as upstream drift on the next run and as a broken gate in CI. Writing a
+    # sibling and renaming means the file is either the old one or the new one.
+    body = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    tmp = EXPECTATIONS.with_name(EXPECTATIONS.name + ".tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8", newline="\n")
+        tmp.replace(EXPECTATIONS)
+    except OSError:
+        # Leave no half-written file behind for the next run to trip over.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     print(f"\nrewrote {EXPECTATIONS.name} (was {today})")
     return True
 

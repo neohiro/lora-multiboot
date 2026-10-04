@@ -31,7 +31,7 @@ differ by one byte in the preamble. Everything else follows from that.
 | Frame decode → cross-protocol relay | **Not written** |
 | OLED / BLE rendering of the panel | **Not written** (rendering is tested; no driver yet) |
 
-1,262 assertions and 98 tool tests pass, compiled under `-Werror` with
+1,262 assertions and 101 tool tests pass, compiled under `-Werror` with
 `-Wconversion -Wsign-conversion -Wshadow`. The current firmware boots, validates
 its own plan and layout, and reports every one of these on the serial log — and
 **transmits nothing**. `firmware/src/main.cpp` says so rather than pretending
