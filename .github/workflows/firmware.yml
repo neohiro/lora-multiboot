@@ -38,11 +38,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      # esptool ships ESP-IDF's partition-table parser. This is the third party
-      # that gets to say no: our own parser, the host gate's rules, and now the
-      # generator the real build uses.
-      - name: Install esptool
-        run: python -m pip install --quiet esptool
+      # ESP-IDF's own generator, fetched from a pinned release rather than from
+      # master, and from master rather than from esptool -- esptool 5.x no longer
+      # carries the command at all, which is why an earlier version of this file
+      # failed on a flag that never existed. Pinned so that an upstream release
+      # cannot turn this job red for a reason that has nothing to do with us;
+      # bump it deliberately. This release is standard library only, so it runs on
+      # a bare runner with nothing installed.
+      - name: Fetch ESP-IDF's partition generator
+        run: |
+          set -euo pipefail
+          curl -sSfLo gen_esp32part.py \
+            https://raw.githubusercontent.com/espressif/esp-idf/v5.3.2/components/partition_table/gen_esp32part.py
+          echo "gen_esp32part.py: $(wc -c < gen_esp32part.py) bytes"
+          python -c "import ast,sys; ast.parse(open('gen_esp32part.py').read())"
+          echo "parses as python"
 
       - name: Generate the partition table the way ESP-IDF does
         run: |
@@ -51,12 +61,10 @@ jobs:
           for table in firmware/partitions/*.csv; do
             name=$(basename "$table" .csv)
             echo "== $name"
-            python -m esptool \
-              --chip esp32s3 \
-              generate-partition-table "$table" \
-              --output-partition-table "out/$name.bin" \
-              --output-flash-image out/bootloader.bin 0x1000 \
-              --flash-size 16MB
+            # This is the third party that gets to say no: our own parser in
+            # flash.py, the rules in the host gate, and now the generator the real
+            # ESP-IDF build uses. It caught two shipped tables that were invalid.
+            python gen_esp32part.py "$table" "out/$name.bin"
             echo "   ok -> out/$name.bin ($(stat -c%s "out/$name.bin") bytes)"
           done
 
@@ -65,7 +73,26 @@ jobs:
           set -euo pipefail
           for bin in out/*.bin; do
             echo "== $bin"
-            python -m esptool --chip esp32s3 generate-partition-table "$bin"
+            python gen_esp32part.py "$bin"
+          done
+
+      # The table the bootloader reads has to be the table we validated. If the
+      # generator had to pad or truncate, the file on the device is not the file
+      # that was checked, and the size check below is the only place that shows.
+      - name: The binary is a whole number of sectors and fits one sector
+        run: |
+          set -euo pipefail
+          for bin in out/*.bin; do
+            size=$(stat -c%s "$bin")
+            echo "$bin: $size bytes"
+            if [ "$size" -gt 4096 ]; then
+              echo "::error::$bin exceeds one 4 KB sector; the bootloader would truncate it"
+              exit 1
+            fi
+            if [ $((size % 32)) -ne 0 ]; then
+              echo "::error::$bin is not MD5-aligned"
+              exit 1
+            fi
           done
 
   firmware:
@@ -93,36 +120,55 @@ jobs:
       - name: Install PlatformIO
         run: python -m pip install --quiet platformio
 
+      # The build log is kept, not just the exit code. A warning in a firmware
+      # build is the only place a pin that is about to be driven is ever mentioned,
+      # and grepping the build tree afterwards would find nothing but strings in
+      # object files.
       - name: Build
-        run: pio run -d firmware -e ${{ matrix.env }}
+        run: |
+          set -o pipefail
+          pio run -d firmware -e ${{ matrix.env }} 2>&1 | tee build.log
+
+      - name: No compiler diagnostics
+        run: |
+          set -euo pipefail
+          if grep -nE '(warning|error):' build.log; then
+            echo "::error::compiler diagnostics in the build"
+            exit 1
+          fi
+          echo "clean build, no warnings"
 
       # The shim that lets the fast gate type-check main.cpp is a model of Arduino,
       # so a green shim check is not proof the real build links. Report the image
       # size against the slot it has to fit in, because "too big for its partition"
-      # is otherwise discovered by the bootloader refusing to run it.
+      # is otherwise discovered by the bootloader refusing to run it. The slot size
+      # is read from the table that was just built rather than written here, so the
+      # two cannot drift apart.
       - name: Image fits its slot
         run: |
           set -euo pipefail
-          slot_bytes=${{ matrix.env == 'heltec_v4_bridge' && '2097152' || '2097152' }}
-          bin=$(ls -1 firmware/.pio/build/${{ matrix.env }}/firmware.bin 2>/dev/null | head -1)
-          if [ -z "$bin" ]; then
+          case "${{ matrix.env }}" in
+            heltec_v4_bridge)         table=quadboot.csv ;;
+            heltec_v4_bridge_dualboot) table=dualboot.csv ;;
+            *) echo "::error::unknown env"; exit 1 ;;
+          esac
+          slot_bytes=$(python -c "
+          import csv
+          rows = list(csv.reader(open('firmware/partitions/$table')))
+          sizes = [int(r[4].strip().rstrip(), 0) for r in rows if r and r[0].strip().startswith('ota_')]
+          assert sizes, 'no ota_ rows'
+          print(min(sizes))
+          ")
+          bin=firmware/.pio/build/${{ matrix.env }}/firmware.bin
+          if [ ! -f "$bin" ]; then
             echo "::error::no firmware.bin produced"
-            ls -R firmware/.pio/build/${{ matrix.env }} | head -50
+            ls -R "firmware/.pio/build/${{ matrix.env }}" | head -50
             exit 1
           fi
           size=$(stat -c%s "$bin")
-          echo "firmware.bin: $size bytes; slot: $slot_bytes bytes"
+          echo "firmware.bin: $size bytes; slot: $slot_bytes bytes ($table)"
           if [ "$size" -gt "$slot_bytes" ]; then
-            echo "::error::image does not fit the slot"
+            echo "::error::image does not fit its slot"
             exit 1
           fi
           echo "fits, with $((slot_bytes - size)) bytes spare"
-
-      - name: Warnings are failures
-        run: |
-          set -euo pipefail
-          if grep -qiE '^.*(warning|error):' firmware/.pio/build/${{ matrix.env }}/ 2>/dev/null; then
-            echo "::error::compiler diagnostics present in the build tree"
-            exit 1
-          fi
-          echo "no compiler diagnostics"

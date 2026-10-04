@@ -129,11 +129,16 @@ def validate(parts: list[Part], flash_size: int) -> None:
 
     # The filesystem pairing. Distinct offsets are already guaranteed by the
     # overlap check above, so re-testing that here would be decoration. What is
-    # NOT covered by geometry is the pairing itself: Meshtastic mounts LittleFS
-    # and MeshCore mounts SPIFFS, and a future edit that hands either side the
-    # other's filesystem makes it format the wrong one on boot. That is the
-    # mistake worth catching, so that is what is checked.
-    expected_fs = {"fs_meshcore": "spiffs", "fs_meshtastic": "littlefs"}
+    # NOT covered by geometry is the pairing itself: each framework must be handed the
+    # filesystem its own code mounts, and a future edit that swaps them makes it
+    # format the wrong one on boot. That is the mistake worth catching.
+    #
+    # Both are SPIFFS today. Meshtastic would rather have LittleFS -- it is the
+    # better filesystem -- but the generator inside the Arduino toolchain that
+    # builds these tables predates ESP-IDF 5.0 and rejects the keyword, so LittleFS
+    # is not a subtype this project can currently ship. Flip fs_meshtastic to
+    # "littlefs" when the toolchain can build it.
+    expected_fs = {"fs_meshcore": "spiffs", "fs_meshtastic": "spiffs"}
     for label, want in expected_fs.items():
         if label not in labels:
             continue
@@ -141,9 +146,9 @@ def validate(parts: list[Part], flash_size: int) -> None:
         if part.subtype != want:
             raise FlashError(
                 f"{label} is declared {part.subtype!r}, expected {want!r}. "
-                "Meshtastic mounts LittleFS and MeshCore mounts SPIFFS; handing "
-                "either side the other's filesystem makes it format the wrong one "
-                "on boot and lose the settings on the other side of the pair."
+"Meshtastic and MeshCore must each get the filesystem their own code mounts; "
+                   "handing either side the other's makes it format the wrong one on boot and "
+                   "lose the settings on the other side of the pair."
             )
 
 

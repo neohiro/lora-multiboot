@@ -54,9 +54,10 @@ Two more things that only the real generator teaches:
 
 - The OTA data partition's **label** is `otadata` but its **subtype** must be
   `ota`. `otadata` is not an ESP-IDF subtype name.
-- The accepted subtype names are `factory`, `ota_0`–`ota_15`, `test` for `app`, and
-  `ota`, `phy`, `nvs`, `coredump`, `nvs_keys`, `efuse`, `undefined`, `esphttpd`,
-  `fat`, `spiffs`, `littlefs` for `data`. Anything else is rejected. The OTA staging
+- The accepted subtype names in current ESP-IDF are `factory`, `ota_0`–`ota_15`,
+  `test` for `app`, and `ota`, `phy`, `nvs`, `coredump`, `nvs_keys`, `efuse`,
+  `undefined`, `esphttpd`, `fat`, `spiffs`, `littlefs` for `data`. Anything else is
+  rejected. The OTA staging
   region uses `undefined` on purpose: it is written by esptool and never mounted,
   so claiming a filesystem would assert a format nothing implements.
 
@@ -191,21 +192,34 @@ Each slot brings its own filesystem partition, and the type is not arbitrary:
 | Slot | Framework | Filesystem | Type |
 |---|---|---|---|
 | 0 | MeshCore | `fs_meshcore` | SPIFFS |
-| 1 | Meshtastic | `fs_meshtastic` | LittleFS |
+| 1 | Meshtastic | `fs_meshtastic` | SPIFFS |
 | 2+ | *reserved* | `fs_reticulum`, `fs_lorawan`, `fs_custom` | SPIFFS |
 
-Meshtastic mounts LittleFS. MeshCore mounts SPIFFS. Handed the same partition,
+Meshtastic mounts LittleFS and MeshCore mounts SPIFFS. Handed the same partition,
 each finds at boot a filesystem it does not recognise, reformats it, and the
 other side's settings are gone — no error message, no way back.
+
+**Today both are declared SPIFFS**, because the partition generator that actually
+builds these tables ships inside `framework-arduinoespressif32`, and its keyword
+list stops at `spiffs` (0x82). `littlefs` (0x83) arrived in ESP-IDF 5.0. Declaring
+LittleFS produced a table the build refused — which is precisely what this
+project's own build CI exists to catch, and it caught it. What protects the
+settings is the offset, not the subtype.
 
 Three independent places enforce this, on purpose:
 
 - `SlotTable::validateFrameworks()` fails if any framework present is malformed,
   and if two frameworks ever share a filesystem label.
-- `tests/test_partition_csv.cpp` asserts SPIFFS for MeshCore and LittleFS for
-  Meshtastic on the actual shipped files.
+- `tests/test_partition_csv.cpp` asserts that the two frameworks are never paired
+  by accident on the actual shipped files.
 - `tools/flash.py` refuses to write a table that pairs either side with the
   other's filesystem type.
+
+`SlotTable` still *parses* every ESP-IDF 5.x subtype — `ota`, `phy`, `nvs`,
+`coredump`, `nvs_keys`, `efuse`, `undefined`, `esphttpd`, `fat`, `spiffs`,
+`littlefs` — so a table written by a newer toolchain is never a parse error. What
+the build accepts is the toolchain's business; the two are deliberately not
+conflated.
 
 `validateFrameworks()` judges **isolation, not presence**. A one-slot board is a
 legitimate state — it runs MeshCore alone — so requiring Meshtastic's slot would

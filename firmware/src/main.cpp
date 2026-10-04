@@ -69,16 +69,18 @@ void rule() { Serial.println("--------------------------------------------------
 // firmware/partitions/quadboot.csv by tools/gen_layouts.py. Deliberately embedded
 // rather than read from flash, so a node can always report what it believes even
 // when the flash it was told to trust has been rewritten underneath it.
+//
+// The bootloader and the partition table are absent because ESP-IDF's generator
+// rejects any declared partition below 0x9000; they exist, and
+// SystemUpdate knows their geometry as constants.
 const char* kCompiledLayout =
-    "bootloader,     app,  factory, 0x0,      0x7000,\n"
-    "partition_tbl,  data, nvs,     0x8000,   0xC000,\n"
-    "otadata,        data, otadata, 0x14000,  0x2000,\n"
-    "nvs,            data, nvs,     0x16000,  0xA000,\n"
-    "coredump,       data, coredump,0x20000,  0x10000,\n"
+    "nvs,            data, nvs,     0x9000,   0xA000,\n"
+    "otadata,        data, ota,     0x13000,  0x2000,\n"
+    "coredump,       data, coredump,0x15000,  0x10000,\n"
     "ota_0,          app,  ota_0,   0x30000,  0x200000,\n"
     "fs_meshcore,    data, spiffs,  0x230000, 0x100000,\n"
     "ota_1,          app,  ota_1,   0x330000, 0x200000,\n"
-    "fs_meshtastic,  data, littlefs,0x530000, 0x100000,\n"
+    "fs_meshtastic,  data, spiffs,  0x530000, 0x100000,\n"
     "ota_2,          app,  ota_2,   0x630000, 0x200000,\n"
     "fs_reticulum,   data, spiffs,  0x830000, 0x100000,\n"
     "ota_3,          app,  ota_3,   0x930000, 0x200000,\n"

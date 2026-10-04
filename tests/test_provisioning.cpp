@@ -166,8 +166,12 @@ void suite_provisioning() {
     const Partition* mtFs = t.find("fs_meshtastic");
     REQUIRE(mcFs != nullptr);
     REQUIRE(mtFs != nullptr);
+    // SPIFFS for both: the partition generator inside the Arduino toolchain
+    // predates ESP-IDF 5.0 and rejects the littlefs keyword, so LittleFS is a
+    // table this toolchain cannot build. The separation that actually protects
+    // anybody's settings is the offset, asserted on the next line.
     CHECK_MSG(mcFs->subType == PartSubType::Spiffs, "MeshCore -> SPIFFS");
-    CHECK_MSG(mtFs->subType == PartSubType::LittleFs, "Meshtastic -> LittleFS");
+    CHECK_MSG(mtFs->subType == PartSubType::Spiffs, "Meshtastic -> SPIFFS");
     CHECK_MSG(mcFs->offset != mtFs->offset, "separate partitions, or one wipes the other");
   }
 

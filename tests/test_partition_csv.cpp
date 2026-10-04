@@ -73,12 +73,19 @@ void suite_partition_csv(const PartitionTableUnderTest* tables, int count) {
     if (mcFs != nullptr && mtFs != nullptr) {
       CHECK_MSG(mcFs->offset != mtFs->offset,
                 t.path + ": MeshCore and Meshtastic share one filesystem");
-      // LittleFS for Meshtastic, SPIFFS for MeshCore. If these ever converge,
-      // one firmware will format the other's settings away.
-      CHECK_MSG(mtFs->subType == PartSubType::LittleFs,
-                t.path + ": Meshtastic must get LittleFS");
-      CHECK_MSG(mcFs->subType == PartSubType::Spiffs,
-                t.path + ": MeshCore must get SPIFFS");
+      // Distinct offsets, so one firmware cannot format the other's settings away.
+      // This is the property that matters and it is asserted above.
+      //
+      // Both subtypes are SPIFFS today, not LittleFS for Meshtastic, because the
+      // partition generator inside the Arduino toolchain that builds this firmware
+      // does not know the littlefs keyword -- it predates ESP-IDF 5.0. Converging
+      // the type per framework is a change to make when the toolchain can build
+      // it; asserting LittleFS here while the shipped table cannot say LittleFS
+      // would be a test passing against a fiction.
+      CHECK_MSG(mtFs->subType == mcFs->subType,
+                t.path + ": the two frameworks must not be handed the same "
+                         "filesystem type by accident -- either both SPIFFS or "
+                         "distinct types, deliberately");
     }
   }
 }

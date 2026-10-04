@@ -14,13 +14,19 @@ struct FsSpec {
   bool littlefs;
 };
 
-// Per-slot filesystem identity. Slot 0 is MeshCore (SPIFFS) and slot 1 is
-// Meshtastic (LittleFS); everything past that is space for a framework that does
-// not exist yet, so it is named but has no opinion about its filesystem type
-// until whoever writes it decides.
+// Per-slot filesystem identity, kept per slot so that changing one framework's
+// filesystem is a one-word edit rather than a search.
+//
+// Every slot says SPIFFS. Meshtastic wanted LittleFS, and LittleFS is the better
+// filesystem -- but the generator that builds these tables ships inside
+// framework-arduinoespressif32 and its keyword list stops at spiffs (0x82);
+// littlefs (0x83) arrived in ESP-IDF 5.0. So LittleFS is a table this toolchain
+// refuses, and a table the toolchain refuses is not a table, it is a wish. When
+// the toolchain moves to ESP-IDF 5.x, set the Meshtastic entry to true and the
+// unit tests below will tell you whether the whole chain agrees.
 constexpr FsSpec kFs[] = {
-    {"fs_meshcore", false}, {"fs_meshtastic", true}, {"fs_reticulum", false},
-    {"fs_lorawan", false},  {"fs_custom", false},
+    {"fs_meshcore", false}, {"fs_meshtastic", false}, {"fs_reticulum", false},
+    {"fs_lorawan", false},    {"fs_custom", false},
 };
 constexpr std::size_t kFsCount = sizeof(kFs) / sizeof(kFs[0]);
 
