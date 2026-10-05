@@ -216,10 +216,10 @@ SlotTable growTable(const SlotTable& existing, std::uint32_t flashSizeBytes,
 
 // Render a layout of exactly `slots` slots as ESP-IDF partition CSV.
 //
-// This is the canonical form: slot n's rows depend only on n, so the CSV for
-// four slots contains the three-slot CSV verbatim plus one more slot. That is
-// what makes the table safe to rewrite in place.
-std::string renderSlots(std::uint8_t slots, std::uint32_t flashSizeBytes = kDefaultFlashBytes);
+ // This is the canonical form: slot n's rows depend only on n, so the CSV for
+ // four slots contains the three-slot CSV verbatim plus one more slot. That is
+ // what makes the table safe to rewrite in place.
+std::string renderSlots(std::uint8_t slots);
 
 // Render a parsed table back to CSV.
 std::string renderCsv(const SlotTable& table);

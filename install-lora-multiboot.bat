@@ -199,6 +199,7 @@ echo   --flash-size MB       Flash size in MB, or 0 to ask the chip (default: 16
 echo   --dry-run             Validate and print plan, write nothing
 echo   --bootloader FILE     Bootloader binary for first-time setup
 echo   --part-table-bin FILE Partition table binary for first-time setup
+echo   --otadata FILE        OTA data partition binary for first-time setup
 echo   --meshcore FILE       MeshCore firmware for slot 0 (convenience)
 echo   --meshtastic FILE     Meshtastic firmware for slot 1 (convenience)
 echo   --update-bootloader FILE  Update only the bootloader

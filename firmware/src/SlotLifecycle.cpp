@@ -312,8 +312,11 @@ ReclaimResult reclaimSlot(const SlotTable& table, const DeviceState& state,
   }
 
   const Partition* fs = table.find(slotFsLabel(index));
-  if (fs != nullptr && fs->size != 0 && state.isProvisioned(index)) {
-    return refuse("slot still holds firmware");
+  if (fs != nullptr && fs->size != 0) {
+    // The slot is not provisioned (checked above), but the filesystem partition
+    // exists and has size. This is the normal case for a slot that was erased
+    // with --erase (firmware erased, settings kept). We allow reclaiming it.
+    // The hole will be declared as an OTA staging region.
   }
 
   // If a staging region already exists it would collide with this hole, so the

@@ -33,6 +33,107 @@ PROVISIONING = ROOT / "firmware" / "include" / "bridge" / "Provisioning.hpp"
 # that is not 28 KB. The header is the single owner; this follows it.
 _CONST_RE = re.compile(r"constexpr\s+std::uint32_t\s+(k\w+)\s*=\s*([^;]+);")
 
+# Safe arithmetic evaluator: handles +, -, *, /, parentheses, hex/decimal literals,
+# and references to previously defined constants. No eval(), no security risk.
+def _eval_arithmetic(expr: str, constants: dict[str, int]) -> int:
+    """Evaluate a simple arithmetic expression using only the provided constants.
+
+    Supported: +, -, *, // (integer division), parentheses, hex (0x...), decimal.
+    All operations are integer. Whitespace is ignored.
+    """
+    # Tokenize
+    tokens = []
+    i = 0
+    while i < len(expr):
+        c = expr[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c in "+-*/()":
+            # Handle // for integer division
+            if c == "/" and i + 1 < len(expr) and expr[i + 1] == "/":
+                tokens.append("//")
+                i += 2
+            else:
+                tokens.append(c)
+                i += 1
+        elif c.isdigit() or (c == "0" and i + 1 < len(expr) and expr[i + 1] in "xX"):
+            # Number literal (hex or decimal)
+            j = i
+            if expr[j] == "0" and j + 1 < len(expr) and expr[j + 1] in "xX":
+                j += 2
+                while j < len(expr) and expr[j] in "0123456789abcdefABCDEF":
+                    j += 1
+            else:
+                while j < len(expr) and expr[j].isdigit():
+                    j += 1
+            tokens.append(int(expr[i:j], 0))
+            i = j
+        elif c.isalpha() or c == "_":
+            # Identifier (constant reference)
+            j = i
+            while j < len(expr) and (expr[j].isalnum() or expr[j] == "_"):
+                j += 1
+            ident = expr[i:j]
+            if ident not in constants:
+                raise FlashError(f"undefined constant {ident!r} in expression {expr!r}")
+            tokens.append(constants[ident])
+            i = j
+        else:
+            raise FlashError(f"invalid character {c!r} in expression {expr!r}")
+    
+    # Shunting-yard algorithm to convert to RPN, then evaluate
+    # Simplified: only supports the operators we need, all left-associative
+    prec = {"+": 1, "-": 1, "*": 2, "//": 2}
+    output = []
+    ops = []
+    
+    for tok in tokens:
+        if isinstance(tok, int):
+            output.append(tok)
+        elif tok in prec:
+            while ops and ops[-1] in prec and prec[ops[-1]] >= prec[tok]:
+                output.append(ops.pop())
+            ops.append(tok)
+        elif tok == "(":
+            ops.append(tok)
+        elif tok == ")":
+            while ops and ops[-1] != "(":
+                output.append(ops.pop())
+            if not ops:
+                raise FlashError(f"mismatched parentheses in {expr!r}")
+            ops.pop()  # pop '('
+    
+    while ops:
+        if ops[-1] in "()":
+            raise FlashError(f"mismatched parentheses in {expr!r}")
+        output.append(ops.pop())
+    
+    # Evaluate RPN
+    stack = []
+    for tok in output:
+        if isinstance(tok, int):
+            stack.append(tok)
+        else:
+            if len(stack) < 2:
+                raise FlashError(f"malformed expression {expr!r}")
+            b = stack.pop()
+            a = stack.pop()
+            if tok == "+":
+                stack.append(a + b)
+            elif tok == "-":
+                stack.append(a - b)
+            elif tok == "*":
+                stack.append(a * b)
+            elif tok == "//":
+                if b == 0:
+                    raise FlashError(f"division by zero in {expr!r}")
+                stack.append(a // b)
+    
+    if len(stack) != 1:
+        raise FlashError(f"malformed expression {expr!r}")
+    return stack[0]
+
 
 def _geometry_constants() -> dict[str, int]:
     """Resolve the uint32 geometry constants from Provisioning.hpp.
@@ -57,7 +158,7 @@ def _geometry_constants() -> dict[str, int]:
             if not set(re.findall(r"[A-Za-z_]\w*", residual)) <= set(out):
                 still.append((name, expr))
                 continue
-            out[name] = int(eval(expr, {"__builtins__": {}}, dict(out)))
+            out[name] = _eval_arithmetic(expr, out)
         if len(still) == len(pending):
             break
         pending = still
@@ -282,15 +383,20 @@ def chip_flash_size(port: str) -> int:
     five-slot table onto an 8MB board fails in a way that looks like a bad
     download rather than a wrong assumption.
     """
-    if shutil.which("esptool") is None and shutil.which("esptool.py") is None:
-        raise FlashError("esptool not found. Install it with: pip install esptool")
     tool = shutil.which("esptool") or shutil.which("esptool.py")
-    proc = subprocess.run(
-        [tool, "--chip", "esp32s3", "--port", port, "flash_id"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    if tool is None:
+        raise FlashError("esptool not found. Install it with: pip install esptool")
+    try:
+        proc = subprocess.run(
+            [tool, "--chip", "esp32s3", "--port", port, "flash_id"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise FlashError(f"esptool flash_id failed with exit code {exc.returncode}") from exc
+    except subprocess.TimeoutExpired:
+        raise FlashError("esptool flash_id timed out after 60s") from None
     blob = proc.stdout + proc.stderr
     m = re.search(r"Detected flash size:\s*(\d+)MB", blob) or re.search(
         r"flash size:\s*(\d+)MB", blob
@@ -395,10 +501,10 @@ def cmd_update_system(args) -> int:
     pieces = system_pieces(csv_path)
     print(f"layout: {csv_path.name}")
 
-    first_slot = min(p[0] for p in pieces.values() if True) if pieces else 0
-    region_end = 0
-    for offset, size in pieces.values():
-        region_end = max(region_end, offset + size)
+    # The system region ends at kFirstSlotOffset (0x30000). This is the invariant:
+    # a system update must never write at or above the first slot.
+    first_slot = geometry_constant("kFirstSlotOffset")
+    region_end = first_slot
 
     wanted = {
         "bootloader": args.bootloader,
@@ -416,7 +522,7 @@ def cmd_update_system(args) -> int:
         if size > capacity:
             raise FlashError(f"{label}: {path.name} is {size} B but the partition is {capacity} B")
         if offset + size > region_end:
-            raise FlashError(f"{label}: would extend past the system region")
+            raise FlashError(f"{label}: would extend past the system region (ends at 0x{region_end:X})")
         plan.append(Write(label, offset, size, path))
 
     # Note on the partition table: it is written whenever it is asked for. The
@@ -512,10 +618,9 @@ def cmd_app(args) -> int:
 
 
 def _run_esptool(args, plan: list[Write]) -> int:
-    if shutil.which("esptool") is None and shutil.which("esptool.py") is None:
-        print("error: esptool not found. Install it with: pip install esptool", file=sys.stderr)
-        return 2
     tool = shutil.which("esptool") or shutil.which("esptool.py")
+    if tool is None:
+        raise FlashError("esptool not found. Install it with: pip install esptool")
 
     port = find_port(getattr(args, "port", None))
     flash_size = (
@@ -542,8 +647,6 @@ def _run_esptool(args, plan: list[Write]) -> int:
         f"{flash_size // (1024 * 1024)}MB",
     ]
 
-    rc = 0
-
     # Erasures first, as their own subcommand.
     #
     # `write_flash` has no per-region --erase flag; the subcommand for this is
@@ -552,9 +655,16 @@ def _run_esptool(args, plan: list[Write]) -> int:
     # option, so `app N --erase` would simply fail.
     for w in [x for x in plan if x.path is None]:
         print(f"  erasing 0x{w.offset:06X} +0x{w.size:X} ({w.label})")
-        rc = subprocess.run(base + ["erase_region", f"0x{w.offset:X}", f"0x{w.size:X}"]).returncode
-        if rc != 0:
-            return rc
+        try:
+            subprocess.run(
+                base + ["erase_region", f"0x{w.offset:X}", f"0x{w.size:X}"],
+                check=True,
+                timeout=120,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise FlashError(f"esptool erase_region failed with exit code {exc.returncode}") from exc
+        except subprocess.TimeoutExpired:
+            raise FlashError("esptool erase_region timed out after 120s") from None
 
     writes = [x for x in plan if x.path is not None]
     if writes:
@@ -562,8 +672,13 @@ def _run_esptool(args, plan: list[Write]) -> int:
         for w in writes:
             cmd += [f"0x{w.offset:X}", str(w.path)]
         print("\nrunning esptool...")
-        rc = subprocess.run(cmd).returncode
-    return rc
+        try:
+            subprocess.run(cmd, check=True, timeout=300)
+        except subprocess.CalledProcessError as exc:
+            raise FlashError(f"esptool write_flash failed with exit code {exc.returncode}") from exc
+        except subprocess.TimeoutExpired:
+            raise FlashError("esptool write_flash timed out after 300s") from None
+    return 0
 
 
 def main() -> int:

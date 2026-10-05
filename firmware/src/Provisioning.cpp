@@ -174,22 +174,22 @@ std::uint8_t provisionedSlots(const SlotTable& table) {
   return n;
 }
 
-std::string renderSlots(std::uint8_t slots, std::uint32_t flashSizeBytes) {
+std::string renderSlots(std::uint8_t slots) {
   std::string csv =
       "# Append-only slot layout. Slot n is at a fixed address whether there are\n"
       "# one slots or sixteen, so growing this table can never move a partition\n"
       "# that already holds firmware.\n"
       "# Validate: python tools/gate.py\n";
-// The partitions of the system region. The bootloader and the partition table are
-// deliberately absent: ESP-IDF's generator refuses any declared partition below
-// 0x9000, and both of those live lower. Their geometry is still known as constants
-// for the updater, which has to write them.
-csv += row("nvs", "data", "nvs", kNvsOffset, kNvsSize);
-csv += row("otadata", "data", "ota", kOtadataOffset, kOtadataSize);
+  // The partitions of the system region. The bootloader and the partition table are
+  // deliberately absent: ESP-IDF's generator refuses any declared partition below
+  // 0x9000, and both of those live lower. Their geometry is still known as constants
+  // for the updater, which has to write them.
+  csv += row("nvs", "data", "nvs", kNvsOffset, kNvsSize);
+  csv += row("otadata", "data", "ota", kOtadataOffset, kOtadataSize);
 
-// Below the slots rather than above them, so capacity stays a single
-// subtraction and adding a slot never disturbs the crash dump.
-csv += row("coredump", "data", "coredump", kCoredumpOffset, kCoredumpSize);
+  // Below the slots rather than above them, so capacity stays a single
+  // subtraction and adding a slot never disturbs the crash dump.
+  csv += row("coredump", "data", "coredump", kCoredumpOffset, kCoredumpSize);
 
   for (std::uint8_t i = 0; i < slots; ++i) {
     char lbl[24];
@@ -197,11 +197,13 @@ csv += row("coredump", "data", "coredump", kCoredumpOffset, kCoredumpSize);
     std::snprintf(lbl, sizeof(lbl), "ota_%u", static_cast<unsigned>(i));
     std::snprintf(sub, sizeof(sub), "ota_%u", static_cast<unsigned>(i));
     csv += row(lbl, "app ", sub, slotOffset(i), kSlotAppBytes);
-    csv += row(slotFsLabel(i), "data", slotFsIsLittleFs(i) ? "littlefs" : "spiffs",
-               slotFsOffset(i), kSlotFsBytes);
+    // slotFsIsLittleFs() is a future hook: Meshtastic prefers LittleFS, but the
+    // partition generator inside the Arduino toolchain (framework-arduinoespressif32)
+    // predates ESP-IDF 5.0 and rejects the "littlefs" keyword. Both are SPIFFS today.
+    // The separation that protects settings is the offset, not the subtype.
+    csv += row(slotFsLabel(i), "data", "spiffs", slotFsOffset(i), kSlotFsBytes);
   }
 
-  (void)flashSizeBytes;
   return csv;
 }
 
@@ -238,7 +240,7 @@ SlotTable growTable(const SlotTable& existing, std::uint32_t flashSizeBytes,
   }
 
   TableReport pr;
-  SlotTable out = SlotTable::parse(renderSlots(static_cast<std::uint8_t>(next + 1), flashSizeBytes),
+  SlotTable out = SlotTable::parse(renderSlots(static_cast<std::uint8_t>(next + 1)),
                                    flashSizeBytes, &pr);
 
   const TableReport geometry = out.validate();
@@ -272,6 +274,6 @@ SlotTable growTable(const SlotTable& existing, std::uint32_t flashSizeBytes,
   return out;
 }
 
-std::string renderCsv(const SlotTable& table) { return renderSlots(provisionedSlots(table), 0); }
+std::string renderCsv(const SlotTable& table) { return renderSlots(provisionedSlots(table)); }
 
 }  // namespace bridge

@@ -134,7 +134,7 @@ void suite_provisioning() {
   // --- rendering a one-slot board -------------------------------------------
 
   {
-    const std::string csv = renderSlots(1, k16Mb);
+    const std::string csv = renderSlots(1);
     CHECK_MSG(parseOk(csv, k16Mb).ok(), "one-slot table parses");
     const SlotTable t = SlotTable::parse(csv, k16Mb);
     CHECK_MSG(t.validate().ok(), t.validate().detail);
@@ -161,7 +161,7 @@ void suite_provisioning() {
   // --- a two-slot board pairs each framework with its own filesystem -------
 
   {
-    const SlotTable t = SlotTable::parse(renderSlots(2, k16Mb), k16Mb);
+    const SlotTable t = SlotTable::parse(renderSlots(2), k16Mb);
     const Partition* mcFs = t.find("fs_meshcore");
     const Partition* mtFs = t.find("fs_meshtastic");
     REQUIRE(mcFs != nullptr);
@@ -182,8 +182,8 @@ void suite_provisioning() {
 
   {
     TableReport gr;
-    SlotTable t = SlotTable::parse(renderSlots(1, k16Mb), k16Mb);
-    REQUIRE(parseOk(renderSlots(1, k16Mb), k16Mb).ok());
+    SlotTable t = SlotTable::parse(renderSlots(1), k16Mb);
+    REQUIRE(parseOk(renderSlots(1), k16Mb).ok());
 
     std::uint32_t previous[8];
     std::uint32_t previousSize[8];
@@ -224,7 +224,7 @@ void suite_provisioning() {
     const std::uint8_t room = maxSlotsForFlash(k16Mb);
     std::uint8_t count = 1;
     TableReport gr;
-    SlotTable t = SlotTable::parse(renderSlots(1, k16Mb), k16Mb);
+    SlotTable t = SlotTable::parse(renderSlots(1), k16Mb);
 
     // Bounded on purpose. If growth ever stopped incrementing the slot count this
     // loop would otherwise run until the process died, and a crash reports far
@@ -247,7 +247,7 @@ void suite_provisioning() {
 
   {
     const std::uint8_t room = maxSlotsForFlash(k16Mb);
-    const SlotTable full = SlotTable::parse(renderSlots(room, k16Mb), k16Mb);
+    const SlotTable full = SlotTable::parse(renderSlots(room), k16Mb);
     TableReport gr;
     const SlotTable grown = growTable(full, k16Mb, &gr);
     CHECK_MSG(!gr.ok(), "no room means no growth");
@@ -258,7 +258,7 @@ void suite_provisioning() {
 
   {
     for (std::uint8_t n = 1; n <= maxSlotsForFlash(k16Mb); ++n) {
-      const std::string csv = renderSlots(n, k16Mb);
+      const std::string csv = renderSlots(n);
       TableReport pr;
       const SlotTable t = SlotTable::parse(csv, k16Mb, &pr);
       CHECK_MSG(pr.ok(), "slot " + std::to_string(n) + ": " + pr.detail);

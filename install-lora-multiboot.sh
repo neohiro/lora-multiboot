@@ -13,6 +13,7 @@
 #   --dry-run             Validate and print plan, write nothing
 #   --bootloader FILE     Bootloader binary for first-time setup
 #   --part-table-bin FILE Partition table binary for first-time setup
+#   --otadata FILE        OTA data partition binary for first-time setup
 #   --app SLOT=FILE       Firmware image for slot (repeatable)
 #   --meshcore FILE       MeshCore firmware for slot 0 (convenience)
 #   --meshtastic FILE     Meshtastic firmware for slot 1 (convenience)
@@ -44,6 +45,9 @@
 #   ./install-lora-multiboot.sh --erase 0
 
 set -euo pipefail
+
+# Trap for cleanup on interrupt
+trap 'log_warn "Interrupted"; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -104,7 +108,9 @@ run_flash_tool() {
     local args=("$@")
     local dry_run_flag=()
     [[ "$DRY_RUN" == true ]] && dry_run_flag=("--dry-run")
-    python3 "$FLASH_TOOL" --table "$TABLE" "${dry_run_flag[@]}" --port "$PORT" --baud "$BAUD" --flash-size "$FLASH_SIZE" "${args[@]}"
+    local port_arg=()
+    [[ -n "$PORT" ]] && port_arg=(--port "$PORT")
+    python3 "$FLASH_TOOL" --table "$TABLE" "${dry_run_flag[@]}" "${port_arg[@]}" --baud "$BAUD" --flash-size "$FLASH_SIZE" "${args[@]}"
 }
 
 # Parse arguments
@@ -134,6 +140,30 @@ done
 
 # Validate table choice
 [[ "$TABLE" == "quadboot" || "$TABLE" == "dualboot" ]] || die "Table must be 'quadboot' or 'dualboot'"
+
+# Validate mutually exclusive operations
+op_count=0
+[[ -n "$UPDATE_BOOTLOADER" || -n "$UPDATE_PART_TABLE" ]] && ((op_count++))
+[[ -n "$ERASE_SLOT" ]] && ((op_count++))
+[[ -n "$ERASE_SETTINGS_SLOT" ]] && ((op_count++))
+[[ -n "$BOOT_SLOT" ]] && ((op_count++))
+[[ -n "$BOOTLOADER" || -n "$PART_TABLE_BIN" || ${#APPS[@]} -gt 0 ]] && ((op_count++))
+[[ "$LIST_ONLY" == true ]] && ((op_count++))
+[[ $op_count -gt 1 ]] && die "Only one operation at a time. Use --help for usage."
+
+# Validate slot numbers if provided
+validate_slot() {
+    local slot="$1"
+    [[ "$slot" =~ ^[0-9]+$ ]] || die "Slot must be a number, got: $slot"
+    if [[ "$TABLE" == "quadboot" ]]; then
+        [[ $slot -ge 0 && $slot -le 4 ]] || die "Slot must be 0-4 for quadboot, got: $slot"
+    else
+        [[ $slot -ge 0 && $slot -le 2 ]] || die "Slot must be 0-2 for dualboot, got: $slot"
+    fi
+}
+[[ -n "$ERASE_SLOT" ]] && validate_slot "$ERASE_SLOT"
+[[ -n "$ERASE_SETTINGS_SLOT" ]] && validate_slot "$ERASE_SETTINGS_SLOT"
+[[ -n "$BOOT_SLOT" ]] && validate_slot "$BOOT_SLOT"
 
 # Check esptool exists
 check_esptool
@@ -220,10 +250,13 @@ if [[ -n "$BOOTLOADER" || -n "$PART_TABLE_BIN" || ${#APPS[@]} -gt 0 ]]; then
         
         run_flash_tool full "${FLASH_ARGS[@]}"
         log_ok "Full flash complete. Board will boot into first provisioned slot."
-    else:
+    else
         # Slot-only operations (requires existing partition table on board)
         for app_spec in "${APPS[@]}"; do
-            IFS='=' read -r slot file <<< "$app_spec"
+            # Parse slot=file, allowing file paths that contain =
+            slot="${app_spec%%=*}"
+            file="${app_spec#*=}"
+            [[ -n "$slot" && -n "$file" ]] || die "--app expects SLOT=FILE, got $app_spec"
             require_file "$file" "Slot $slot firmware"
             log_info "Writing $file to slot $slot"
             run_flash_tool app "$slot" --app "$file"
