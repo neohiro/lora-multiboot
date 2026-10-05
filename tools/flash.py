@@ -618,7 +618,7 @@ def main() -> int:
     p_full.add_argument("--bootloader", type=Path, required=True)
     p_full.add_argument("--part-table-bin", type=Path, required=True)
     p_full.add_argument("--otadata", type=Path)
-    p_full.add_argument("--app", type=Path, action="append", default=[], metavar="LABEL=PATH")
+    p_full.add_argument("--app", type=str, action="append", default=[], metavar="LABEL=PATH")
     p_full.set_defaults(func=cmd_full)
 
     args = ap.parse_args()

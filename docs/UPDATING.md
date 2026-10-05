@@ -76,6 +76,32 @@ board is recoverable over USB with no further hardware.
 
 ## Command line
 
+### Using the unified installer (recommended)
+
+```bash
+# what is on the board, and what an update would touch
+./install-lora-multiboot.sh --list
+
+# update the bootloader only. Slots and every settings partition are untouched.
+./install-lora-multiboot.sh --update-bootloader bootloader.bin
+
+# reflash one slot. Other slots and all settings are untouched.
+./install-lora-multiboot.sh --app 1=meshcore-1.2.3.bin
+
+# erase one slot's firmware but keep its settings
+./install-lora-multiboot.sh --erase 1
+
+# erase one slot completely (firmware + settings, irreversible)
+./install-lora-multiboot.sh --erase-settings 1
+
+# first-time setup: bootloader, partition table and any slots
+./install-lora-multiboot.sh --bootloader bootloader.bin \
+    --part-table-bin partition-table.bin \
+    --meshcore bridge.bin --meshtastic meshtastic.bin
+```
+
+### Using `flash.py` directly
+
 ```bash
 # what is on the board, and what an update would touch
 python tools/flash.py list

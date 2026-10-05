@@ -246,6 +246,37 @@ cannot be provisioned, so the usable count is **N−1**:
 - `esptool` — install with `pip install esptool` (required for all flash operations)
 - A Heltec WiFi LoRa 32 V4 (16 MB flash) connected via USB
 
+### Option 1: Unified installer (recommended)
+
+One script handles everything — first-time setup, adding slots, updates, and recovery:
+
+```bash
+# First-time setup: flash bootloader, partition table, MeshCore and Meshtastic
+./install-lora-multiboot.sh --bootloader boot.bin --part-table-bin part.bin --meshcore meshcore.bin --meshtastic meshtastic.bin
+
+# Add Meshtastic to a board that already has MeshCore
+./install-lora-multiboot.sh --meshtastic meshtastic.bin
+
+# Update bootloader only (preserves all slots and settings)
+./install-lora-multiboot.sh --update-bootloader new_boot.bin
+
+# List what's on the board
+./install-lora-multiboot.sh --list
+
+# Reflash Meshtastic slot without losing settings
+./install-lora-multiboot.sh --app 1=new_meshtastic.bin
+
+# Erase a bad MeshCore image but keep channel keys
+./install-lora-multiboot.sh --erase 0
+
+# Dry-run any command to see what would happen
+./install-lora-multiboot.sh --dry-run --meshcore meshcore.bin
+```
+
+Windows users can use `install-lora-multiboot.bat` with the same arguments.
+
+### Option 2: Direct `flash.py` usage
+
 1. **Plug in the board** over USB (or connect via BLE/WiFi — same service, different transport).
 2. **List the layout** to see what slots exist: `python tools/flash.py list --table quadboot`
 3. **Provision the first slot** (MeshCore): `python tools/flash.py app 0 --app meshcore.bin`
